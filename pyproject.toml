@@ -14,13 +14,19 @@ classifiers = [
 description = "A Neural Network to control the motion of the Deltabot stage."
 dependencies = [
     "numpy",
-    "matplotlib",
-    "torch"
+    "matplotlib"
 ] # Add project dependencies here, e.g. ["click", "numpy"]
 dynamic = ["version"]
 license.file = "LICENSE"
 readme = "README.md"
 requires-python = ">=3.11"
+
+#[[tool.uv.index]]
+#name = "pytorch"
+#url = "https://download.pytorch.org/whl/cu121"
+#
+#[tool.uv.sources.torch]
+#index = "pytorch"
 
 [dependency-groups]
 dev = [
