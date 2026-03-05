@@ -35,3 +35,9 @@ python -m deltabot_nn_controller --version
 <!-- README only content. Anything below this line won't be included in index.md -->
 
 See https://diamondrc.github.io/deltabot-nn-controller for more detailed documentation.
+
+
+# Required Setup
+
+`uv venv --seed --system-site-packages`
+`uv run python /workspaces/deltabot_nn_controller/src/deltabot_nn_controller/model.py`
