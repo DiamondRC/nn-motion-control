@@ -5,6 +5,7 @@
         "dockerfile": "../Dockerfile",
         "target": "developer"
     },
+    "privileged": true,
     "remoteEnv": {
         // Allow X11 apps to run inside the container
         "DISPLAY": "${localEnv:DISPLAY}",
@@ -26,7 +27,6 @@
             "settings": {
                 // Use the container's python by default
                 "python.defaultInterpreterPath": "/usr/bin/python",
-                // "python.defaultInterpreterPath": "/cache/venv-for${localWorkspaceFolder}/bin/python",
                 // Don't activate the venv as it is already in the PATH
                 "python.terminal.activateEnvInCurrentTerminal": false,
                 "python.terminal.activateEnvironment": false,
@@ -82,9 +82,6 @@
     ],
     // Mount the parent as /workspaces so we can pip install peers as editable
     "workspaceMount": "source=${localWorkspaceFolder}/..,target=/workspaces,type=bind",
-    // After the container is created, recreate the venv then make pre-commit first run faster
-    // "postCreateCommand": "cd /workspaces/deltabot_nn_controller && uv venv --clear && uv sync && pre-commit install --install-hooks",
-    //    "postCreateCommand": "cd /workspaces/deltabot_nn_controller && python3 -m venv .venv --system-site-packages && uv pip sync --dev"
-    // postCreateCommand: "uv venv /workspaces/.venv --clear && uv sync"
-    "postCreateCommand": "cd /workspaces/deltabot_nn_controller && uv venv --system-site-packages --clear && uv sync"
+    // Setup the uv venv
+    "postCreateCommand": "cd /workspaces/deltabot_nn_controller && uv sync"
 }

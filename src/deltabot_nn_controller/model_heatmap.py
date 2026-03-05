@@ -1,6 +1,10 @@
+import os
+
 import torch
-from json_manager import load_config
-from mlp import MLP
+from model_zoo.json_manager import load_config
+from model_zoo.models.mlp import MLP
+
+os.system("clear")
 
 MODEL_SAVE_PATH = (
     "src/deltabot_nn_controller/model_zoo/models/model_states/best_model.pth"
@@ -48,6 +52,9 @@ class HeatmapModel:
                 weights.append(param.detach().numpy())
             elif "bias" in name:
                 biases.append(param.detach().numpy())
+
+        print(weights)
+        print(biases)
 
         # Pass to plotting function
         self._plot_heatmap(weights, biases)

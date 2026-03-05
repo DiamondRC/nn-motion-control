@@ -6,4 +6,4 @@ FROM nvcr.io/nvidia/pytorch:25.12-py3 AS developer
 #     graphviz \
 #     && apt-get dist-clean
 
-RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+COPY --from=ghcr.io/astral-sh/uv:0.10 /uv /uvx /bin/

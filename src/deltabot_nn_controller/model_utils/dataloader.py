@@ -16,12 +16,13 @@ class PVT2DACDataset(Dataset):
             print("\nLoading dataset to RAM...")
 
         # Try to load entire dataset into system RAM
-        try:
-            with h5py.File(h5_path, "r") as f:
-                self.data = f[data_key][:]
-                self.labels = f[label_key][:]
-        except Exception as e:
-            raise RuntimeError(f"Failed to load dataset into RAM: {e}") from e
+        # try:
+        with h5py.File(h5_path, "r") as f:
+            self.data = f[data_key][:]
+            self.labels = f[label_key][:]
+        # except Exception as e:
+        #     raise RuntimeError(f"Failed to load dataset into RAM: {e}")
+        # raise RuntimeError(f"Failed to load dataset into RAM: {e}") from e
 
         # Convert to PyTorch tensors
         self.data = torch.from_numpy(self.data).float()
