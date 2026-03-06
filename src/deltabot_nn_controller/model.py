@@ -1,6 +1,5 @@
 import os
 
-import psutil
 import torch
 from model_utils.dataloader import PVT2DACDataset
 from model_utils.training_loop import Trainer
@@ -40,36 +39,6 @@ MODEL_SAVE_PATH = (
 )
 SEED = 42
 
-# -------------------------------
-# Configure system resources
-# -------------------------------
-
-# Profile system resources
-cpu_count = os.cpu_count()
-ram_gb = psutil.virtual_memory().total / (1024**3)
-gpu_count = torch.cuda.device_count()
-
-# Heuristic for dataloader workers and prefetching based on system resources
-if AUTO_TUNE_DATALOADER:
-    NUM_WORKERS = max(int(cpu_count * (PERCENTAGE_CPU_CORE_UTIL / 100)), 8)
-    PREFETCH_FACTOR = max(NUM_WORKERS, 4)
-
-    if DO_VERBOSE_LOGGING:
-        print(
-            f"Auto-detected: {cpu_count} cores, {ram_gb:.1f}GB RAM, {gpu_count} GPU(s)"
-        )
-    print(f"Using: num_workers={NUM_WORKERS}, prefetch_factor={PREFETCH_FACTOR}")
-else:
-    if PERCENTAGE_CPU_CORE_UTIL > 90:
-        print(
-            f"WARNING: Using a high percentage of \
-system CPU cores ({PERCENTAGE_CPU_CORE_UTIL})%"
-        )
-    print(
-        f"Using manually set: num_workers={NUM_WORKERS}, \
-prefetch_factor={PREFETCH_FACTOR}"
-    )
-
 
 # -------------------------------
 # CUDA Logging
@@ -94,18 +63,23 @@ else:
 # -------------------------------
 
 dataset = PVT2DACDataset(
-    h5_path=DATAFILE, logging=DO_VERBOSE_LOGGING, window_size=WINDOW_SIZE
-)
-dataset.cleanup_dataloaders()
-train_loader, val_loader, test_loader = dataset.get_dataloaders(
+    h5_path=DATAFILE,
+    batch_size=BATCH_SIZE,
     train_ratio=TRAIN_RATIO,
     val_ratio=VAL_RATIO,
-    batch_size=BATCH_SIZE,
+    do_auto_tune_dataloader=AUTO_TUNE_DATALOADER,
+    cpu_core_util=PERCENTAGE_CPU_CORE_UTIL,
     num_workers=NUM_WORKERS,
     prefetch_factor=PREFETCH_FACTOR,
     seed=SEED,
+    logging=DO_VERBOSE_LOGGING,
+    window_size=WINDOW_SIZE,
 )
-
+train_loader, val_loader, test_loader = (
+    dataset.train_loader,
+    dataset.val_loader,
+    dataset.test_loader,
+)
 
 # -------------------------------
 # Instantiate model architecture
@@ -142,35 +116,29 @@ trainer = Trainer(
 # Pass dummy data through model to verify forward pass and log initial stats
 if DO_VERBOSE_LOGGING:
     print("\nProfiling model with dummy input...")
-    # dummy_input = torch.randn(1, 7).to(DEVICE)
-    # print(f"Dummy input shape: {dummy_input.shape}")
-    # with torch.no_grad():
-    #     model_dummy_output = model(dummy_input)
-    # print("Profiling model with dummy input... DONE")
+    dummy_input = torch.randn(1, 7 * WINDOW_SIZE).to(DEVICE)
+    print(f"Dummy input shape: {dummy_input.shape}")
+    with torch.no_grad():
+        model_dummy_output = model(dummy_input)
+    print("Profiling model with dummy input... DONE")
 
     print(f"Model sent to device: {next(model.parameters()).device}")
 
+    print(f"First layer sample weights: {model.network[0].weight.flatten()[:5]}")
     print(
-        f"First layer sample weights: \
-{model.network[0].weight.flatten()[:5]}"
+        f"First layer weight range: "
+        f"[{model.network[0].weight.min():.3f}, {model.network[0].weight.max():.3f}]",
     )
+    print(f"Final layer sample weights: {model.network[-1].weight.flatten()[:5]}")
     print(
-        f"First layer weight range: \
-[{model.network[0].weight.min():.3f}, {model.network[0].weight.max():.3f}]",
-    )
-    print(
-        f"Final layer sample weights: \
-{model.network[-1].weight.flatten()[:5]}"
-    )
-    print(
-        f"Final layer weight range: \
-[{model.network[-1].weight.min():.3f}, {model.network[-1].weight.max():.3f}]",
+        f"Final layer weight range: "
+        f"[{model.network[-1].weight.min():.3f}, {model.network[-1].weight.max():.3f}]",
     )
 
-#     print(
-#         f"Model dummy output range: \
-# [{model_dummy_output.min():.3f}, {model_dummy_output.max():.3f}]"
-#     )
+    print(
+        f"Model dummy output range: "
+        f"[{model_dummy_output.min():.3f}, {model_dummy_output.max():.3f}]"
+    )
 
 # Log input/output ranges for user data to verify normalisation
 if DO_VERBOSE_LOGGING:

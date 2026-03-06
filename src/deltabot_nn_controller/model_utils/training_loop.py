@@ -73,12 +73,12 @@ class Trainer:
             for name, param in self.model.named_parameters():
                 print(f"  {name}: {param.device}, shape={param.shape}")
             print(
-                f"GPU param count: \
-{sum(1 for p in self.model.parameters() if p.device.type == 'cuda')}"
+                f"GPU param count: "
+                f"{sum(1 for p in self.model.parameters() if p.device.type == 'cuda')}"
             )
             print(
-                f"Model size: \
-{sum(p.numel() * p.element_size() for p in self.model.parameters()) / 1e9:.2f}GB"
+                f"Model size: "
+                f"{sum(p.numel() * p.element_size() for p in self.model.parameters()) / 1e9:.2f}GB"  # noqa: E501
             )
             print(f"Baseline GPU mem: {torch.cuda.memory_allocated() / 1e9:.2f}GB")
 
@@ -244,8 +244,8 @@ class Trainer:
         )
 
         print(
-            f"Test Results - Loss: {avg_loss:.4f}, \
-MAE: {mae:.4f}, RMSE: {rmse:.4f}, MAPE: {mape:.2f}%"
+            f"Test Results - Loss: {avg_loss:.4f}, "
+            f"MAE: {mae:.4f}, RMSE: {rmse:.4f}, MAPE: {mape:.2f}%"
         )
 
         return {"loss": avg_loss, "mae": mae, "rmse": rmse, "mape": mape}
@@ -275,8 +275,8 @@ MAE: {mae:.4f}, RMSE: {rmse:.4f}, MAPE: {mape:.2f}%"
 
             if epoch % 10 == 0 or epoch == self.num_epochs - 1:
                 print(
-                    f"Epoch {epoch + 1}/{self.num_epochs}, \
-Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}"
+                    f"Epoch {epoch + 1}/{self.num_epochs}, "
+                    f"Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}"
                 )
 
             # Early stopping check
