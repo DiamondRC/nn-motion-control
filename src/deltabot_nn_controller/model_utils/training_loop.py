@@ -57,7 +57,7 @@ class Trainer:
         self.learning_rate = learning_rate
         self.min_delta = min_delta
         self.optimizer = optimizer_class(self.model.parameters(), lr=self.learning_rate)
-        self.patence = patience
+        self.patience = patience
         self.save_path = save_path
         self.logging = logging
         self.accumulation_steps = accumulation_steps
@@ -65,6 +65,7 @@ class Trainer:
         self.train_losses = []
         self.val_losses = []
         self.stopped_early = 0
+        self.test_results = {}
 
         # Return model shape and parameter count
         if self.logging:
@@ -202,47 +203,7 @@ class Trainer:
 
         return total_loss / len(self.val_loader)
 
-    def train(self):
-        best_val_loss = float("inf")
-        epochs_no_improve = 0
-
-        for epoch in range(self.num_epochs):
-            train_loss = self._train_epoch()
-            val_loss = self._validate_epoch()
-
-            # Store losses for future plotting
-            self.train_losses.append(train_loss)
-            self.val_losses.append(val_loss)
-
-            if epoch % 10 == 0 or epoch == self.num_epochs - 1:
-                print(
-                    f"Epoch {epoch + 1}/{self.num_epochs}, \
-Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}"
-                )
-
-            # Early stopping check
-            if val_loss < best_val_loss - self.min_delta:
-                best_val_loss = val_loss
-                epochs_no_improve = 0
-
-                # Save best model state
-                torch.save(self.model.state_dict(), self.save_path)
-                self.stopped_early = epoch + 1
-
-            else:
-                epochs_no_improve += 1
-
-            if epochs_no_improve >= self.patence:
-                print(f"Early stopping triggered after {epoch + 1} epochs.")
-                break
-
-        # Load best model and test
-        print("Loading best model for testing...")
-        self.model.load_state_dict(torch.load(self.save_path))
-        test_results = self.test()
-        return test_results
-
-    def test(self):
+    def _test(self):
         self.model.eval()
         total_loss = 0
         all_predictions = []
@@ -289,12 +250,54 @@ MAE: {mae:.4f}, RMSE: {rmse:.4f}, MAPE: {mape:.2f}%"
 
         return {"loss": avg_loss, "mae": mae, "rmse": rmse, "mape": mape}
 
-    def plot_losses(self):
+    def _plot_losses(self):
         plt.figure(figsize=(10, 5))
         plt.plot(self.train_losses, label="Training Loss")
         plt.plot(self.val_losses, label="Validation Loss")
         plt.xlabel("Epoch")
         plt.ylabel("Loss")
         plt.title("Training and Validation Loss")
+        plt.grid()
         plt.legend()
         plt.show()
+
+    def train(self):
+        best_val_loss = float("inf")
+        epochs_no_improve = 0
+
+        for epoch in range(self.num_epochs):
+            train_loss = self._train_epoch()
+            val_loss = self._validate_epoch()
+
+            # Store losses for future plotting
+            self.train_losses.append(train_loss)
+            self.val_losses.append(val_loss)
+
+            if epoch % 10 == 0 or epoch == self.num_epochs - 1:
+                print(
+                    f"Epoch {epoch + 1}/{self.num_epochs}, \
+Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}"
+                )
+
+            # Early stopping check
+            if val_loss < best_val_loss - self.min_delta:
+                best_val_loss = val_loss
+                epochs_no_improve = 0
+
+                # Save best model state
+                torch.save(self.model.state_dict(), self.save_path)
+                self.stopped_early = epoch + 1
+
+            else:
+                epochs_no_improve += 1
+
+            if epochs_no_improve >= self.patience:
+                print(f"Early stopping triggered after {epoch + 1} epochs.")
+                break
+
+        # Load best model and test
+        print("\nLoading best model for testing...")
+        self.model.load_state_dict(torch.load(self.save_path))
+        test_results = self._test()
+        self.test_results = test_results
+        self._plot_losses()

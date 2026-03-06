@@ -14,8 +14,11 @@ class MLP(nn.Module):
     - activations: List of activation functions for each hidden layer
     - dropout: Dropout rate between layers
     - layer_norm: Boolean if we apply LayerNorm after each hidden layer
+    - window_size: Number of timesteps in input window
     """
 
+    # TODO - rewrite logic to handle variable activations per layer,
+    # currently assumes all ReLU
     ACTIVATIONS = {"ReLU": nn.ReLU, "Tanh": nn.Tanh, "Sigmoid": nn.Sigmoid}
 
     def __init__(self, config):
@@ -29,12 +32,17 @@ class MLP(nn.Module):
 
     # Constructs the MLP based on the provided config
     def _build_mlp(self, config):
-        input_size = config["input_size"]
         output_size = config["output_size"]
         hidden_layers = config["hidden_layers"]
         activations = config.get("activations", ["ReLU"] * len(hidden_layers))
         dropout = config.get("dropout", 0.0)
         layer_norm = config.get("layer_norm", False)
+
+        window_size = config.get("window_size", 1)
+        # Flatten input if using windows
+        input_size = config["input_size"] * window_size
+        print(f"Building MLP with input size {input_size}")
+
         print(f"LayerNorm enabled: {config.get('layer_norm', False)}")
 
         layers = []
@@ -71,13 +79,19 @@ class MLP(nn.Module):
         return shapes
 
     def forward(self, x):
+        """
+        Handle flattening for sliding window input if necessary,
+        then pass through the network.
+        """
+
+        if x.dim() == 3:  # [B, window_size, features]
+            x = x.flatten(start_dim=1)  # [B, window_size*features]
+        # if x.dim() == 2, already correct shape ([B, features]), return
         return self.network(x)
 
 
-# Load and instantiate
+# Load
 with open("src/deltabot_nn_controller/model_zoo/basic_mlp.json") as f:
     config = json.load(f)
     if len(config["activations"]) != len(config["hidden_layers"]):
         raise ValueError("Length of activations must match length of hidden layers")
-
-# model = NeuralNet(config)

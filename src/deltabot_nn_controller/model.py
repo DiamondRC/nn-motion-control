@@ -29,8 +29,9 @@ NUM_WORKERS = 8
 PREFETCH_FACTOR = 4
 TRAIN_RATIO = 0.8
 VAL_RATIO = 0.1
-MAX_EPOCHS = 20
-PATIENCE = 500
+MAX_EPOCHS = 10
+PATIENCE = 5
+WINDOW_SIZE = 4
 MIN_DELTA = 1e-4
 LEARNING_RATE = 3e-4
 ACCUMULATION_STEPS = 1  # Set >1 to simulate larger batch sizes on limited hardware
@@ -92,7 +93,10 @@ else:
 # Create dataloaders
 # -------------------------------
 
-dataset = PVT2DACDataset(h5_path=DATAFILE, logging=DO_VERBOSE_LOGGING)
+dataset = PVT2DACDataset(
+    h5_path=DATAFILE, logging=DO_VERBOSE_LOGGING, window_size=WINDOW_SIZE
+)
+dataset.cleanup_dataloaders()
 train_loader, val_loader, test_loader = dataset.get_dataloaders(
     train_ratio=TRAIN_RATIO,
     val_ratio=VAL_RATIO,
@@ -138,10 +142,11 @@ trainer = Trainer(
 # Pass dummy data through model to verify forward pass and log initial stats
 if DO_VERBOSE_LOGGING:
     print("\nProfiling model with dummy input...")
-    dummy_input = torch.randn(1, 7).to(DEVICE)
-    with torch.no_grad():
-        model_dummy_output = model(dummy_input)
-        print("Profiling model with dummy input... DONE")
+    # dummy_input = torch.randn(1, 7).to(DEVICE)
+    # print(f"Dummy input shape: {dummy_input.shape}")
+    # with torch.no_grad():
+    #     model_dummy_output = model(dummy_input)
+    # print("Profiling model with dummy input... DONE")
 
     print(f"Model sent to device: {next(model.parameters()).device}")
 
@@ -162,10 +167,10 @@ if DO_VERBOSE_LOGGING:
 [{model.network[-1].weight.min():.3f}, {model.network[-1].weight.max():.3f}]",
     )
 
-    print(
-        f"Model dummy output range: \
-[{model_dummy_output.min():.3f}, {model_dummy_output.max():.3f}]"
-    )
+#     print(
+#         f"Model dummy output range: \
+# [{model_dummy_output.min():.3f}, {model_dummy_output.max():.3f}]"
+#     )
 
 # Log input/output ranges for user data to verify normalisation
 if DO_VERBOSE_LOGGING:
@@ -180,3 +185,6 @@ trainer.profile_one_batch()
 
 print("\nStarting training loop...")
 trainer.train()
+print("Training loop complete.")
+dataset.cleanup_dataloaders()
+print("Finished Exectution")

@@ -1,28 +1,41 @@
+import gc
+
 import h5py
 import torch
+import torch.multiprocessing as mp
 from torch.utils.data import DataLoader, Dataset, random_split
 
 
 class PVT2DACDataset(Dataset):
     """
     Custom Dataset for loading deltabot data from an HDF5 file.
-    Loads the entire dataset into RAM for faster access during training.
+
+    Tries to load the entire dataset into RAM for faster access during training.
     Provides a method to create DataLoaders with train/val/test splits.
     """
 
-    def __init__(self, h5_path, logging, data_key="inputs", label_key="outputs"):
+    def __init__(
+        self, h5_path, logging, window_size, data_key="inputs", label_key="outputs"
+    ):
+        # Instantiate user-configurable options
         self.logging = logging
+        self.window_size = window_size
+
+        # Log dataset loading
         if self.logging:
             print("\nLoading dataset to RAM...")
 
         # Try to load entire dataset into system RAM
         # try:
+        #     with h5py.File(h5_path, "r") as f:
+        #         self.data = f[data_key][:]
+        #         self.labels = f[label_key][:]
+        # except Exception as e:
+        #     raise RuntimeError(f"Failed to load dataset into RAM: {e}") from e
+
         with h5py.File(h5_path, "r") as f:
             self.data = f[data_key][:]
             self.labels = f[label_key][:]
-        # except Exception as e:
-        #     raise RuntimeError(f"Failed to load dataset into RAM: {e}")
-        # raise RuntimeError(f"Failed to load dataset into RAM: {e}") from e
 
         # Convert to PyTorch tensors
         self.data = torch.from_numpy(self.data).float()
@@ -32,10 +45,24 @@ class PVT2DACDataset(Dataset):
             print(f"Loaded {len(self.data)} samples to RAM")
 
     def __len__(self):
-        return len(self.data)
+        if self.window_size > 1:
+            # Handle sliding windows
+            return len(self.data) - self.window_size + 1
+        else:
+            return len(self.data)
 
     def __getitem__(self, idx):
-        return self.data[idx], self.labels[idx]
+        if self.window_size > 1:
+            # Create data window of shape (window_size, features)
+            window_data = self.data[idx : idx + self.window_size]
+
+            # Use target at the end of the window
+            label = self.labels[idx + self.window_size - 1]
+            # print(window_data.shape, label.shape)
+            return window_data, label
+        else:
+            # If no windowing, return single sample
+            return self.data[idx], self.labels[idx]
 
     def get_dataloaders(
         self, train_ratio, val_ratio, batch_size, num_workers, prefetch_factor, seed
@@ -64,6 +91,11 @@ class PVT2DACDataset(Dataset):
         train_dataset, val_dataset, test_dataset = random_split(
             self, [train_size, val_size, test_size]
         )
+
+        # Force multiprocessing to use temporary files for inter-process communication.
+        # Avoids descriptor exhaustion and cleanup deadlocks on Linux.
+        if num_workers > 0:
+            mp.set_sharing_strategy("file_system")
 
         # Instanticate DataLoaders
         train_loader = DataLoader(
@@ -100,3 +132,16 @@ class PVT2DACDataset(Dataset):
         )
 
         return train_loader, val_loader, test_loader
+
+    def cleanup_dataloaders(self):
+        """
+        Clean up DataLoader workers to exit gracefully.
+
+        Usage: Call this method after training/testing is complete to ensure all
+        worker processes are terminated and resources are freed.
+        """
+
+        # Dump the CUDA cache
+        torch.cuda.empty_cache()
+        # Run garbage collection
+        gc.collect()
