@@ -2,6 +2,7 @@ import os
 
 import torch
 from model_utils.dataloader import PVT2DACDataset
+from model_utils.test_saved_model import TestModel
 from model_utils.training_loop import Trainer
 from model_zoo.json_manager import load_config
 from model_zoo.models.mlp import MLP
@@ -28,7 +29,7 @@ NUM_WORKERS = 8
 PREFETCH_FACTOR = 4
 TRAIN_RATIO = 0.8
 VAL_RATIO = 0.1
-MAX_EPOCHS = 10
+MAX_EPOCHS = 1
 PATIENCE = 5
 WINDOW_SIZE = 4
 MIN_DELTA = 1e-4
@@ -91,7 +92,7 @@ model.to(DEVICE)
 
 
 # -------------------------------
-# Train loop (placeholder)
+# Train loop
 # -------------------------------
 
 # Instantiate trainer with model, dataloaders, and training hyperparams
@@ -99,7 +100,6 @@ trainer = Trainer(
     model=model,
     train_loader=train_loader,
     val_loader=val_loader,
-    test_loader=test_loader,
     device=DEVICE,
     scaler_class=GradScaler,
     optimizer_class=Adam,
@@ -155,4 +155,29 @@ print("\nStarting training loop...")
 trainer.train()
 print("Training loop complete.")
 dataset.cleanup_dataloaders()
+
+
+# -------------------------------
+# Test Model
+# -------------------------------
+
+# Grab training info
+train_losses, val_losses, early_stop_epoch = trainer.get_training_info()
+norm_consts = dataset.get_normalisation_params()
+
+tester = TestModel(
+    model=model,
+    test_loader=test_loader,
+    training_losses=train_losses,
+    validation_losses=val_losses,
+    criterion_class=MSELoss,
+    early_stop_epoch=early_stop_epoch,
+    normalisation_consts=norm_consts,
+    device=DEVICE,
+    save_path=MODEL_SAVE_PATH,
+    logging=DO_VERBOSE_LOGGING,
+)
+
+tester.test()
+
 print("Finished Exectution")

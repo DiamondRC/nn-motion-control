@@ -177,8 +177,12 @@ with h5py.File(OUTPUT_FILE, "w") as f:
                 x_vel_std,
                 y_pos_mean,
                 y_pos_std,
+                y_vel_mean,
+                y_vel_std,
                 z_pos_mean,
                 z_pos_std,
+                z_vel_mean,
+                z_vel_std,
                 x_dac_mean,
                 x_dac_std,
                 y_dac_mean,
@@ -250,12 +254,12 @@ with h5py.File(OUTPUT_FILE, "w") as f:
 
 if DO_NORMALISE:
     print(
-        f"Converted to {OUTPUT_FILE}: inputs {input_data.shape}, \
-outputs {output_data.shape}, norm_params {len(norm_params)}"
+        f"Converted to {OUTPUT_FILE}: inputs {input_data.shape}, "
+        f"outputs {output_data.shape}, norm_params {len(norm_params)}"
     )
 
 else:
     print(
-        f"Converted to {OUTPUT_FILE}: \
-inputs {input_data.shape}, outputs {output_data.shape}"
+        f"Converted to {OUTPUT_FILE}: "
+        f"inputs {input_data.shape}, outputs {output_data.shape}"
     )

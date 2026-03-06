@@ -1,4 +1,3 @@
-import matplotlib.pyplot as plt
 import torch
 from torch import autocast
 
@@ -33,7 +32,6 @@ class Trainer:
         model,
         train_loader,
         val_loader,
-        test_loader,
         device,
         scaler_class,
         optimizer_class,
@@ -49,7 +47,6 @@ class Trainer:
         self.model = model
         self.train_loader = train_loader
         self.val_loader = val_loader
-        self.test_loader = test_loader
         self.device = device
         self.scaler = scaler_class(device=self.device)
         self.criterion = criterion_class()
@@ -91,7 +88,7 @@ class Trainer:
         """
 
         print("\nProfiling one batch...")
-        data, labels = next(iter(self.test_loader))
+        data, labels = next(iter(self.val_loader))
         data, labels = data.to(self.device), labels.to(self.device)
 
         print("Checking CUDA status before profiling")
@@ -203,65 +200,22 @@ class Trainer:
 
         return total_loss / len(self.val_loader)
 
-    def _test(self):
-        self.model.eval()
-        total_loss = 0
-        all_predictions = []
-        all_targets = []
+    def get_training_info(self):
+        """
+        Returns all the training and corresponding validation
+        losses, as well as the epoch with the last best model.
+        """
 
-        # Check best model on unseen test data to estimate real-world performance
-        with torch.no_grad():
-            for data, labels in self.test_loader:
-                data, labels = (
-                    data.to(self.device, non_blocking=True),
-                    labels.to(self.device, non_blocking=True),
-                )
-                with autocast(device_type=self.device):
-                    outputs = self.model(data)
-                    loss = self.criterion(outputs, labels)
-                    total_loss += loss.item()
-
-                    # Collect predictions and targets for metrics
-                    all_predictions.extend(outputs.cpu().flatten().numpy())
-                    all_targets.extend(labels.cpu().flatten().numpy())
-
-        avg_loss = total_loss / len(self.test_loader)
-
-        # Convert to tensors for metric computation
-        all_predictions = torch.tensor(all_predictions)
-        all_targets = torch.tensor(all_targets)
-
-        # Common regression metrics
-        mae = torch.mean(torch.abs(all_predictions - all_targets)).item()
-        rmse = torch.sqrt(torch.mean((all_predictions - all_targets) ** 2)).item()
-        mape = (
-            torch.mean(
-                torch.abs(
-                    (all_targets - all_predictions) / (torch.abs(all_targets) + 1e-8)
-                )
-            )
-            * 100
-        )
-
-        print(
-            f"Test Results - Loss: {avg_loss:.4f}, "
-            f"MAE: {mae:.4f}, RMSE: {rmse:.4f}, MAPE: {mape:.2f}%"
-        )
-
-        return {"loss": avg_loss, "mae": mae, "rmse": rmse, "mape": mape}
-
-    def _plot_losses(self):
-        plt.figure(figsize=(10, 5))
-        plt.plot(self.train_losses, label="Training Loss")
-        plt.plot(self.val_losses, label="Validation Loss")
-        plt.xlabel("Epoch")
-        plt.ylabel("Loss")
-        plt.title("Training and Validation Loss")
-        plt.grid()
-        plt.legend()
-        plt.show()
+        return self.train_losses, self.val_losses, self.stopped_early
 
     def train(self):
+        """
+        Executes the training loop for the model,
+        including validation checks.
+
+        Implements early stopping.
+        """
+
         best_val_loss = float("inf")
         epochs_no_improve = 0
 
@@ -287,17 +241,10 @@ class Trainer:
                 # Save best model state
                 torch.save(self.model.state_dict(), self.save_path)
                 self.stopped_early = epoch + 1
-
             else:
                 epochs_no_improve += 1
 
             if epochs_no_improve >= self.patience:
                 print(f"Early stopping triggered after {epoch + 1} epochs.")
+                print(f"The best model was at epoch {self.stopped_early}.")
                 break
-
-        # Load best model and test
-        print("\nLoading best model for testing...")
-        self.model.load_state_dict(torch.load(self.save_path))
-        test_results = self._test()
-        self.test_results = test_results
-        self._plot_losses()

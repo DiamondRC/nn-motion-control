@@ -2,6 +2,7 @@ import gc
 import os
 
 import h5py
+import numpy as np
 import psutil
 import torch
 import torch.multiprocessing as mp
@@ -29,6 +30,8 @@ class PVT2DACDataset(Dataset):
         logging,
         window_size,
         seed,
+        # Persistant_workers seems to cause all sorts of I/O issues,
+        # so disabled for now.
         do_persistent_workers=False,
         data_key="inputs",
         label_key="outputs",
@@ -56,6 +59,12 @@ class PVT2DACDataset(Dataset):
         with h5py.File(h5_path, "r") as f:
             # Check size of dataset in GB
             dataset_size_gb = (f[data_key].nbytes + f[label_key].nbytes) / (1024**3)
+
+            # Collect normalisation params
+            self.norm_params = np.array(f["norm_params"])
+            # .values.astype(
+            #     np.float32
+            # )
 
             # Compare sizes with a little headroom (+20% max system)
             if available_memory < dataset_size_gb + (available_memory * 0.2):
@@ -178,8 +187,6 @@ class PVT2DACDataset(Dataset):
             mp.set_sharing_strategy("file_system")
 
         # Instanticate DataLoaders
-        # Persistant_workers seems to cause all sorts of I/O issues,
-        # so disabled for now.
         train_loader = DataLoader(
             train_dataset,
             batch_size=self.batch_size,
@@ -227,3 +234,8 @@ class PVT2DACDataset(Dataset):
         torch.cuda.empty_cache()
         # Run garbage collection
         gc.collect()
+
+    def get_normalisation_params(self):
+        """ """
+
+        return self.norm_params
