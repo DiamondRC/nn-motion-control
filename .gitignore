@@ -73,3 +73,4 @@ lockfiles/
 # ML data
 data/
 *.pth
+logs/

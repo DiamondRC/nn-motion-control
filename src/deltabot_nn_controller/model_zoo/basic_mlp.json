@@ -1,6 +1,6 @@
 {
   "network_type": "mlp",
-  "input_size": 7,
+  "input_size": 10,
   "output_size": 3,
   "hidden_layers": [
     1024,

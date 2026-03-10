@@ -17,6 +17,7 @@ class TestModel:
         save_path,
         device,
         logging,
+        test_display_num=9,
     ):
         # Instantiate user args
         self.model = model
@@ -25,25 +26,42 @@ class TestModel:
         self.val_losses = validation_losses
         self.criterion = criterion_class()
         self.early_stop_epoch = early_stop_epoch
-        self.norm_consts = normalisation_consts
         self.save_path = save_path
         self.device = device
+        self.test_display_num = test_display_num
 
-    def _plot_losses(self):
-        """ """
-
-        plt.figure(figsize=(10, 5))
-        plt.plot(self.train_losses, label="Training Loss")
-        plt.plot(self.val_losses, label="Validation Loss")
-        plt.xlabel("Epoch")
-        plt.ylabel("Loss")
-        plt.title("Training and Validation Loss")
-        plt.grid()
-        plt.legend()
-        plt.show()
+        # Unpack normalisation arguements
+        self.t_mean = (normalisation_consts[0],)
+        self.t_std = (normalisation_consts[1],)
+        self.x_pos_mean = (normalisation_consts[2],)
+        self.x_pos_std = (normalisation_consts[3],)
+        self.x_vel_mean = (normalisation_consts[4],)
+        self.x_vel_std = (normalisation_consts[5],)
+        self.x_acc_mean = (normalisation_consts[6],)
+        self.x_acc_std = (normalisation_consts[7],)
+        self.y_pos_mean = (normalisation_consts[8],)
+        self.y_pos_std = (normalisation_consts[9],)
+        self.y_vel_mean = (normalisation_consts[10],)
+        self.y_vel_std = (normalisation_consts[11],)
+        self.y_acc_mean = (normalisation_consts[12],)
+        self.y_acc_std = (normalisation_consts[13],)
+        self.z_pos_mean = (normalisation_consts[14],)
+        self.z_pos_std = (normalisation_consts[15],)
+        self.z_vel_mean = (normalisation_consts[16],)
+        self.z_vel_std = (normalisation_consts[17],)
+        self.z_acc_mean = (normalisation_consts[18],)
+        self.z_acc_std = (normalisation_consts[19],)
+        self.x_dac_mean = (normalisation_consts[20],)
+        self.x_dac_std = (normalisation_consts[21],)
+        self.y_dac_mean = (normalisation_consts[22],)
+        self.y_dac_std = (normalisation_consts[23],)
+        self.z_dac_mean = (normalisation_consts[24],)
+        self.z_dac_std = (normalisation_consts[25],)
 
     def _testing_loop(self):
-        """ """
+        """
+        Test the model and collect the results for alter analysis.
+        """
 
         self.model.eval()
         total_loss = 0
@@ -72,225 +90,143 @@ class TestModel:
         self.all_predictions = torch.tensor(all_predictions)
         self.all_targets = torch.tensor(all_targets)
 
+        def _denormalise_inputs(inputs):
+            inputs = np.array(inputs)
+
+            stds = np.array(
+                [
+                    self.t_std,
+                    self.x_pos_std,
+                    self.x_vel_std,
+                    self.x_acc_std,
+                    self.y_pos_std,
+                    self.y_vel_std,
+                    self.y_acc_std,
+                    self.z_pos_std,
+                    self.z_vel_std,
+                    self.z_acc_std,
+                ]
+            )
+            means = np.array(
+                [
+                    self.t_mean,
+                    self.x_pos_mean,
+                    self.x_vel_mean,
+                    self.x_acc_mean,
+                    self.y_pos_mean,
+                    self.y_vel_mean,
+                    self.y_acc_mean,
+                    self.z_pos_mean,
+                    self.z_vel_mean,
+                    self.z_acc_mean,
+                ]
+            )
+
+            denormalize = np.add(np.multiply(inputs.astype(np.float64), stds), means)
+
+            return denormalize
+
+        def _denormalise_outputs(outputs):
+            outputs = np.array(outputs)
+
+            # Model outputs predictions in triplets,
+            # create read-only view in threes.
+            stds = np.array([self.x_dac_std, self.y_dac_std, self.z_dac_std])
+            means = np.array([self.x_dac_mean, self.y_dac_mean, self.z_dac_mean])
+
+            # Split into triplets
+            n_points = len(outputs) // 3
+            outputs_reshaped = outputs.reshape(3, n_points)
+
+            # Broadcasting applies stds[0]/means[0] to col0, etc.
+            denormalized_reshaped = (outputs_reshaped.astype(np.float64) * stds) + means
+            denormalize = denormalized_reshaped.ravel()  # flatten back to 1D
+
+            return denormalize
+
+        # Denormalise Data
+        # self.all_inputs_denorm = _denormalise_inputs()
+        self.all_predictions_denorm = _denormalise_outputs(all_predictions)
+        self.all_targets_denorm = _denormalise_outputs(all_targets)
+
     def _run_metrics(self):
-        """ """
+        """
+        Calculates some common metrics to benchmark the performance of the model.
+        """
+
+        print("\nDisplaying some model predictions against truth values:")
+        print(
+            f"\n{'-' * 40}"
+            f"\n{'Predicted':>12} | {'Actual':>12} | {'% Diff':>10}"
+            f"\n{'-' * 40}"
+        )
+        for i in range(0, self.test_display_num, 3):
+            preds = self.all_predictions_denorm[i : i + 3]
+            targets = self.all_targets_denorm[i : i + 3]
+            diffs = np.abs(preds - targets) / targets * 100
+
+            for p, t, d in zip(preds, targets, diffs, strict=False):
+                print(f"{p:12.3f} | {t:12.3f} | {d:9.3f}%")
+
+            # print(
+            #     f"Model predicts ({preds[0]:.3f}, {preds[1]:.3f}, {preds[2]:.3f}) "
+            #     f"versus ({targets[0]:.3f}, {targets[1]:.3f}, {targets[2]:.3f}) "
+            #     f"(DAC Values)\n"
+            #     f"That's a difference of "
+            #     f"({diffs[0]:.3f}%, {diffs[1]:.3f}%, {diffs[2]:.3f}%)!\n"
+            # )
 
         # Common regression metrics
-        self.mae = torch.mean(torch.abs(self.all_predictions - self.all_targets)).item()
-        self.rmse = torch.sqrt(
-            torch.mean((self.all_predictions - self.all_targets) ** 2)
+        self.mae = np.mean(
+            np.abs(self.all_predictions_denorm - self.all_targets_denorm)
+        ).item()
+        self.rmse = np.sqrt(
+            np.mean((self.all_predictions_denorm - self.all_targets_denorm) ** 2)
         ).item()
         self.mape = (
-            torch.mean(
-                torch.abs(
-                    (self.all_targets - self.all_predictions)
-                    / (torch.abs(self.all_targets) + 1e-8)
+            np.mean(
+                np.abs(
+                    (self.all_targets_denorm - self.all_predictions_denorm)
+                    / (np.abs(self.all_targets_denorm) + 1e-8)
                 )
             )
             * 100
         )
 
         print(
-            f"Test Results - Loss: {self.avg_loss:.4f}, "
-            f"MAE: {self.mae:.4f}, RMSE: {self.rmse:.4f}, MAPE: {self.mape:.2f}%"
+            f"\nCommon metrics:"
+            f"\nAvg Loss: {self.avg_loss:.4f}"
+            f"\nAvg MAE: {self.mae:.4f}"
+            f"\nAvg RMSE: {self.rmse:.4f}"
+            f"\nAvg MAPE: {self.mape:.2f}%"
         )
 
-    def _example_data(self):
-        """ """
-
-        # TODO - Rewrite for readability
-        self.model.eval()
-
-        print(f"self.norm_consts: {self.norm_consts}")
-
-        (
-            t_mean,
-            t_std,
-            x_pos_mean,
-            x_pos_std,
-            x_vel_mean,
-            x_vel_std,
-            y_pos_mean,
-            y_pos_std,
-            y_vel_mean,
-            y_vel_std,
-            z_pos_mean,
-            z_pos_std,
-            z_vel_mean,
-            z_vel_std,
-            x_dac_mean,
-            x_dac_std,
-            y_dac_mean,
-            y_dac_std,
-            z_dac_mean,
-            z_dac_std,
-        ) = self.norm_consts
-
-        # Denormalise them and display to user
-        def _denormalise_column(normed_values):
-            """
-            Denormalize 1D normalized values using z-score standardization inverse.
-            """
-
-            (
-                t_mean,
-                t_std,
-                x_pos_mean,
-                x_pos_std,
-                x_vel_mean,
-                x_vel_std,
-                y_pos_mean,
-                y_pos_std,
-                y_vel_mean,
-                y_vel_std,
-                z_pos_mean,
-                z_pos_std,
-                z_vel_mean,
-                z_vel_std,
-                x_dac_mean,
-                x_dac_std,
-                y_dac_mean,
-                y_dac_std,
-                z_dac_mean,
-                z_dac_std,
-            ) = self.norm_consts
-
-            normed_values[0] = (
-                normed_values[0].astype(np.float64) * x_dac_std
-            ) + x_dac_mean
-            normed_values[1] = (
-                normed_values[1].astype(np.float64) * y_dac_std
-            ) + y_dac_mean
-            normed_values[2] = (
-                normed_values[2].astype(np.float64) * z_dac_std
-            ) + z_dac_mean
-            normed_values[3] = (
-                normed_values[3].astype(np.float64) * x_dac_std
-            ) + x_dac_mean
-            normed_values[4] = (
-                normed_values[4].astype(np.float64) * y_dac_std
-            ) + y_dac_mean
-            normed_values[5] = (
-                normed_values[5].astype(np.float64) * z_dac_std
-            ) + z_dac_mean
-            normed_values[6] = (
-                normed_values[6].astype(np.float64) * x_dac_std
-            ) + x_dac_mean
-            normed_values[7] = (
-                normed_values[7].astype(np.float64) * y_dac_std
-            ) + y_dac_mean
-            normed_values[8] = (
-                normed_values[8].astype(np.float64) * z_dac_std
-            ) + z_dac_mean
-
-            return normed_values
-
-        def _denormalise_windowed(normed_windows):
-            """Denormalize windows: (N, window_size, 7) -> (N, window_size, 7)"""
-
-            (
-                t_mean,
-                t_std,
-                x_pos_mean,
-                x_pos_std,
-                x_vel_mean,
-                x_vel_std,
-                y_pos_mean,
-                y_pos_std,
-                y_vel_mean,
-                y_vel_std,
-                z_pos_mean,
-                z_pos_std,
-                z_vel_mean,
-                z_vel_std,
-                x_dac_mean,
-                x_dac_std,
-                y_dac_mean,
-                y_dac_std,
-                z_dac_mean,
-                z_dac_std,
-            ) = self.norm_consts
-
-            normed_windows[:, :, 0] = (
-                normed_windows[:, :, 0].astype(np.float64) * t_std
-            ) + t_mean
-            normed_windows[:, :, 1] = (
-                normed_windows[:, :, 1].astype(np.float64) * x_pos_std
-            ) + x_pos_mean
-            normed_windows[:, :, 2] = (
-                normed_windows[:, :, 2].astype(np.float64) * x_vel_std
-            ) + x_vel_mean
-            normed_windows[:, :, 3] = (
-                normed_windows[:, :, 3].astype(np.float64) * y_pos_std
-            ) + y_pos_mean
-            normed_windows[:, :, 4] = (
-                normed_windows[:, :, 4].astype(np.float64) * y_vel_std
-            ) + y_vel_mean
-            normed_windows[:, :, 5] = (
-                normed_windows[:, :, 5].astype(np.float64) * z_pos_std
-            ) + z_pos_mean
-            normed_windows[:, :, 6] = (
-                normed_windows[:, :, 6].astype(np.float64) * z_vel_std
-            ) + z_vel_mean
-
-            return normed_windows
-
-        # Access first N windows via dataset (respects __len__ and __getitem__)
-        dataset = self.test_loader.dataset
-        n = 3  # Number of windows to sample
-        sample_data_windows = []
-        sample_labels = []
-        sample_preds = []
-
-        with torch.no_grad():
-            for i in range(n):
-                window_data, label = dataset[
-                    i
-                ]  # Returns (window_size, 16 features), scalar label
-
-                window_data = window_data.to(self.device, non_blocking=True)
-                label = label.to(self.device, non_blocking=True)
-
-                # Model inference on window
-                with autocast(device_type=self.device):
-                    output = self.model(
-                        window_data.unsqueeze(0)
-                    )  # Add batch dim: (1, 1)
-
-                # Store CPU numpy for denormalization
-                sample_data_windows.append(window_data.cpu().numpy())
-                sample_labels.append(label.cpu().numpy())
-                sample_preds.append(output.cpu().numpy().flatten())
-
-        # Stack windows: shape (N, window_size, 16)
-        all_windows = np.stack(sample_data_windows)  # (N, window_size, 16)
-        all_labels = np.concatenate(sample_labels)  # (N,)
-        sample_preds = np.concatenate(sample_preds)  # TODO
-
-        denorm_windows = _denormalise_windowed(all_windows)
-        denorm_labels = _denormalise_column(all_labels)
-        sample_preds = _denormalise_column(sample_preds)
-
-        print("\nDisplaying denormalised values...")
-        print(f"First window, first 3 timesteps:\n{denorm_windows[0, :3, :3]}")
-        print(f"Real values:      {denorm_labels}")
-        print(f"Model prediction: {sample_preds}")
-
     def test(self):
-        """ """
+        """
+        Execute the testing sequence for the saved model.
+        """
 
         # Load best model and test
         print("\nLoading best model for testing...")
         self.model.load_state_dict(torch.load(self.save_path))
 
-        # # Display training losses
-        # self._plot_losses()
+        # Test the loaded model
+        self._testing_loop()
 
-        # # Test the loaded model
-        # self._testing_loop()
+        # Display metrics about the trained model
+        self._run_metrics()
 
-        # # Display metrics about the trained model
-        # self._run_metrics()
+    def plot_losses(self):
+        """
+        Plots the training losses against the validation losses for visual inspection.
+        """
 
-        # Undo normalisation to display real results to user
-        self._example_data()
+        plt.figure(figsize=(10, 5))
+        plt.plot(self.train_losses, label="Training Loss")
+        plt.plot(self.val_losses, label="Validation Loss")
+        plt.xlabel("Epoch")
+        plt.ylabel("Loss")
+        plt.title("Training and Validation Loss")
+        plt.grid()
+        plt.legend()
+        plt.show()

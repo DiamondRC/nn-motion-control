@@ -21,7 +21,11 @@ class MLP(nn.Module):
     # currently assumes all ReLU
     ACTIVATIONS = {"ReLU": nn.ReLU, "Tanh": nn.Tanh, "Sigmoid": nn.Sigmoid}
 
-    def __init__(self, config):
+    def __init__(self, logging, config):
+        # User params
+        self.logging = logging
+
+        # Model config
         super().__init__()
         self.network_type = config["network_type"]
         if self.network_type == "mlp":
@@ -41,9 +45,13 @@ class MLP(nn.Module):
         window_size = config.get("window_size", 1)
         # Flatten input if using windows
         input_size = config["input_size"] * window_size
-        print(f"Building MLP with input size {input_size}")
 
-        print(f"LayerNorm enabled: {config.get('layer_norm', False)}")
+        if self.logging:
+            print(
+                f"\nBuilding MLP with input size {input_size}"
+                f"\nLayerNorm enabled: {config.get('layer_norm', False)}"
+                f"\nUsing Dropout: {config.get('dropout')}"
+            )
 
         layers = []
         prev_size = input_size

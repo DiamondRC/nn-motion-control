@@ -1,4 +1,5 @@
 import os
+import time
 
 import torch
 from model_utils.dataloader import PVT2DACDataset
@@ -22,7 +23,7 @@ DO_VERBOSE_LOGGING = True
 DATAFILE = "./data/pvt_to_dac_training.h5"
 
 # BATCH_SIZE = 131072
-BATCH_SIZE = 1028
+BATCH_SIZE = 1028 * 8
 PERCENTAGE_CPU_CORE_UTIL = 80
 AUTO_TUNE_DATALOADER = True
 NUM_WORKERS = 8
@@ -30,7 +31,7 @@ PREFETCH_FACTOR = 4
 TRAIN_RATIO = 0.8
 VAL_RATIO = 0.1
 MAX_EPOCHS = 1
-PATIENCE = 5
+PATIENCE = 250
 WINDOW_SIZE = 4
 MIN_DELTA = 1e-4
 LEARNING_RATE = 3e-4
@@ -39,6 +40,13 @@ MODEL_SAVE_PATH = (
     "src/deltabot_nn_controller/model_zoo/models/model_states/best_model.pth"
 )
 SEED = 42
+INPUT_SIZE = 10  # controls dummy test size
+
+
+# -------------------------------
+# Measure Execution Time
+# -------------------------------
+start_time = time.perf_counter()
 
 
 # -------------------------------
@@ -87,7 +95,7 @@ train_loader, val_loader, test_loader = (
 # -------------------------------
 
 # TODO - model selection
-model = MLP(config=load_config())
+model = MLP(logging=DO_VERBOSE_LOGGING, config=load_config())
 model.to(DEVICE)
 
 
@@ -116,7 +124,7 @@ trainer = Trainer(
 # Pass dummy data through model to verify forward pass and log initial stats
 if DO_VERBOSE_LOGGING:
     print("\nProfiling model with dummy input...")
-    dummy_input = torch.randn(1, 7 * WINDOW_SIZE).to(DEVICE)
+    dummy_input = torch.randn(1, INPUT_SIZE * WINDOW_SIZE).to(DEVICE)
     print(f"Dummy input shape: {dummy_input.shape}")
     with torch.no_grad():
         model_dummy_output = model(dummy_input)
@@ -140,16 +148,15 @@ if DO_VERBOSE_LOGGING:
         f"[{model_dummy_output.min():.3f}, {model_dummy_output.max():.3f}]"
     )
 
-# Log input/output ranges for user data to verify normalisation
+# Log input/output ranges for user data to verify normalisation,
+# then profile a single batch of data.
 if DO_VERBOSE_LOGGING:
     print("\nProfiling user data...")
     data_sample, label_sample = next(iter(train_loader.dataset))
     print(f"Data Inputs range: [{data_sample.min():.3f}, {data_sample.max():.3f}]")
     print(f"Data Targets range: [{label_sample.min():.3f}, {label_sample.max():.3f}]")
     print("Profiling user data... DONE")
-
-# Begin training loop
-trainer.profile_one_batch()
+    trainer.profile_one_batch()
 
 print("\nStarting training loop...")
 trainer.train()
@@ -180,4 +187,28 @@ tester = TestModel(
 
 tester.test()
 
-print("Finished Exectution")
+# -------------------------------
+# Complete Timing
+# -------------------------------
+
+# Complete timing measurement
+end_time = time.perf_counter()
+elapsed = end_time - start_time
+
+# Format nicely for long runs
+hours = int(elapsed // 3600)
+minutes = int((elapsed % 3600) // 60)
+seconds = elapsed % 60
+hms = f"{hours:02d}:{minutes:02d}:{seconds:06.3f}".rstrip("0").rstrip(":")
+
+print(f"\nModel training and testing took {hms} (Hours/Mins/Secs).")
+
+
+# -------------------------------
+# Finish Execution
+# -------------------------------
+
+# Display the losses
+tester.plot_losses()
+
+print("\nFinished model execution.")

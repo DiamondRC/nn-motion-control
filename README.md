@@ -41,3 +41,16 @@ See https://diamondrc.github.io/deltabot-nn-controller for more detailed documen
 
 `uv venv --seed --system-site-packages`
 `uv run python /workspaces/deltabot_nn_controller/src/deltabot_nn_controller/model.py`
+
+
+# TODO
+
+- Add acceleration to model inputs
+- Verify normalisation and denormalisation
+- Try Conv1D
+- Try different model sizes
+- Add proper logging and saving graphs
+- Try a custom log loss function to direct the model to the importance of small changes in the data
+- Measure model performance better
+- Look into adaptive scaling
+- Look into L2 weight decay

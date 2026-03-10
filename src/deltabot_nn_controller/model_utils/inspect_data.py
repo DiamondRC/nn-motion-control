@@ -9,24 +9,20 @@ with h5py.File(OUTPUT_FILE, "r") as f:
     if "norm_params" in f:
         norm_params = f["norm_params"][:]
         print(
-            f"Loaded from {OUTPUT_FILE}: inputs {input_data.shape}, \
-outputs {output_data.shape}, norm_params {len(norm_params)}"
+            f"\nLoaded from {OUTPUT_FILE}: inputs {input_data.shape}, "
+            f"outputs {output_data.shape}, norm_params {len(norm_params)}"
         )
-        print()
-
+        print(f"\nSample data: {input_data[0][:20]}")
         print(
-            f"max/min input_data: \
-{input_data.max(axis=0)}, {input_data.min(axis=0)}"
+            f"\nmax/min input_data: {input_data.max(axis=0)}, {input_data.min(axis=0)}"
         )
-        print()
         print(
-            f"max/min output_data: \
-{output_data.max(axis=0)}, {output_data.min(axis=0)}"
+            f"\nmax/min output_data: "
+            f"{output_data.max(axis=0)}, {output_data.min(axis=0)}"
         )
-        print()
-        print(f"norm_params: {norm_params}")
+        print(f"\nnorm_params: {norm_params}")
     else:
         print(
-            f"Loaded from {OUTPUT_FILE}: \
-inputs {input_data.shape}, outputs {output_data.shape}"
+            f"Loaded from {OUTPUT_FILE}: "
+            f"\ninputs {input_data.shape}, outputs {output_data.shape}"
         )

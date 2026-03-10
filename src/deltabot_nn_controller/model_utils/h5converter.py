@@ -72,8 +72,8 @@ def parse_all_files(data_dir):
                 print(f"Float32: {np.float32(df['x_pos'][0])}")
                 recovered = np.float64(np.float32(df["x_pos"][0]))
                 print(
-                    f"Error:   {abs(recovered - df['x_pos'][0]):.2e} mm = \
-{abs(recovered - df['x_pos'][0]) * 1e9:.1f} nm"
+                    f"Error:   {abs(recovered - df['x_pos'][0]):.2e} mm = "
+                    f"{abs(recovered - df['x_pos'][0]) * 1e9:.1f} nm"
                 )
 
                 print(np.max(df["x_pos"]), np.min(df["x_pos"]))
@@ -83,10 +83,35 @@ def parse_all_files(data_dir):
                 dt = np.diff(df["timestep"])
                 dt_safe = np.clip(dt, 1e-9, None)
 
-                # Calculate velocities
-                df["x_vel"] = np.concatenate(([0.0], np.diff(df["x_pos"]) / dt_safe))
-                df["y_vel"] = np.concatenate(([0.0], np.diff(df["y_pos"]) / dt_safe))
-                df["z_vel"] = np.concatenate(([0.0], np.diff(df["z_pos"]) / dt_safe))
+                # Velocities (correct)
+                positions = np.stack([df["x_pos"], df["y_pos"], df["z_pos"]])
+                velocities_unpadded = np.diff(positions, axis=1) / dt_safe  # (3, n-1)
+
+                # Accelerations from unpadded velocities
+                accelerations = (
+                    np.diff(velocities_unpadded, axis=1) / dt_safe[:-1]
+                )  # (3, n-2)
+
+                # Pad both
+                velocities_padded = np.pad(
+                    velocities_unpadded,
+                    ((0, 0), (1, 0)),
+                    "constant",
+                    constant_values=np.nan,
+                )
+                accelerations_padded = np.pad(
+                    accelerations, ((0, 0), (2, 0)), "constant", constant_values=np.nan
+                )
+
+                # Unpack
+                df["x_vel"] = velocities_padded[0]
+                df["y_vel"] = velocities_padded[1]
+                df["z_vel"] = velocities_padded[2]
+                df["x_acc"] = accelerations_padded[0]
+                df["y_acc"] = accelerations_padded[1]
+                df["z_acc"] = accelerations_padded[2]
+
+                df = df.dropna()
 
                 # Reorder outputs as inputs
                 df = df[
@@ -94,10 +119,13 @@ def parse_all_files(data_dir):
                         "timestep",
                         "x_pos",
                         "x_vel",
+                        "x_acc",
                         "y_pos",
                         "y_vel",
+                        "y_acc",
                         "z_pos",
                         "z_vel",
+                        "z_acc",
                         "x_input_real",
                         "y_input_real",
                         "z_input_real",
@@ -149,11 +177,8 @@ with h5py.File(OUTPUT_FILE, "w") as f:
         # Normalise each PVT axis and store the mean/std for later denormalisation
         all_data["timestep"], t_mean, t_std = normalise_column(all_data["timestep"])
         all_data["x_pos"], x_pos_mean, x_pos_std = normalise_column(all_data["x_pos"])
-        all_data["x_vel"], x_vel_mean, x_vel_std = normalise_column(all_data["x_vel"])
         all_data["y_pos"], y_pos_mean, y_pos_std = normalise_column(all_data["y_pos"])
-        all_data["y_vel"], y_vel_mean, y_vel_std = normalise_column(all_data["y_vel"])
         all_data["z_pos"], z_pos_mean, z_pos_std = normalise_column(all_data["z_pos"])
-        all_data["z_vel"], z_vel_mean, z_vel_std = normalise_column(all_data["z_vel"])
 
         # Normalise each DAC axis and store the mean/std for later denormalisation
         all_data["x_input_real"], x_dac_mean, x_dac_std = normalise_column(
@@ -166,36 +191,94 @@ with h5py.File(OUTPUT_FILE, "w") as f:
             all_data["z_input_real"]
         )
 
+        if DO_PVT:
+            # Normalise velocity and acceleration values, store results
+            all_data["x_vel"], x_vel_mean, x_vel_std = normalise_column(
+                all_data["x_vel"]
+            )
+            all_data["x_acc"], x_acc_mean, x_acc_std = normalise_column(
+                all_data["x_acc"]
+            )
+            all_data["y_vel"], y_vel_mean, y_vel_std = normalise_column(
+                all_data["y_vel"]
+            )
+            all_data["y_acc"], y_acc_mean, y_acc_std = normalise_column(
+                all_data["y_acc"]
+            )
+            all_data["z_vel"], z_vel_mean, z_vel_std = normalise_column(
+                all_data["z_vel"]
+            )
+            all_data["z_acc"], z_acc_mean, z_acc_std = normalise_column(
+                all_data["z_acc"]
+            )
+
         # Gather denormalisation parameters into one array for later use in inference
-        norm_params = np.array(
-            [
-                t_mean,
-                t_std,
-                x_pos_mean,
-                x_pos_std,
-                x_vel_mean,
-                x_vel_std,
-                y_pos_mean,
-                y_pos_std,
-                y_vel_mean,
-                y_vel_std,
-                z_pos_mean,
-                z_pos_std,
-                z_vel_mean,
-                z_vel_std,
-                x_dac_mean,
-                x_dac_std,
-                y_dac_mean,
-                y_dac_std,
-                z_dac_mean,
-                z_dac_std,
-            ]
-        )
+        if DO_PVT:
+            norm_params = np.array(
+                [
+                    t_mean,
+                    t_std,
+                    x_pos_mean,
+                    x_pos_std,
+                    x_vel_mean,
+                    x_vel_std,
+                    x_acc_mean,
+                    x_acc_std,
+                    y_pos_mean,
+                    y_pos_std,
+                    y_vel_mean,
+                    y_vel_std,
+                    y_acc_mean,
+                    y_acc_std,
+                    z_pos_mean,
+                    z_pos_std,
+                    z_vel_mean,
+                    z_vel_std,
+                    z_acc_mean,
+                    z_acc_std,
+                    x_dac_mean,
+                    x_dac_std,
+                    y_dac_mean,
+                    y_dac_std,
+                    z_dac_mean,
+                    z_dac_std,
+                ]
+            )
+        else:
+            norm_params = np.array(
+                [
+                    t_mean,
+                    t_std,
+                    x_pos_mean,
+                    x_pos_std,
+                    y_pos_mean,
+                    y_pos_std,
+                    z_pos_mean,
+                    z_pos_std,
+                    x_dac_mean,
+                    x_dac_std,
+                    y_dac_mean,
+                    y_dac_std,
+                    z_dac_mean,
+                    z_dac_std,
+                ]
+            )
 
         if DO_PVT:
             print("Writing PVT dataset with normalisation params...")
             input_data = all_data[
-                ["timestep", "x_pos", "x_vel", "y_pos", "y_vel", "z_pos", "z_vel"]
+                [
+                    "timestep",
+                    "x_pos",
+                    "x_vel",
+                    "x_acc",
+                    "y_pos",
+                    "y_vel",
+                    "y_acc",
+                    "z_pos",
+                    "z_vel",
+                    "z_acc",
+                ]
             ].values
             output_data = all_data[
                 ["x_input_real", "y_input_real", "z_input_real"]
@@ -209,7 +292,16 @@ with h5py.File(OUTPUT_FILE, "w") as f:
     else:
         if DO_PVT:
             input_data = all_data[
-                ["timestep", "x_pos", "x_vel", "y_pos", "y_vel", "z_pos", "z_vel"]
+                "timestep",
+                "x_pos",
+                "x_vel",
+                "x_acc",
+                "y_pos",
+                "y_vel",
+                "y_acc",
+                "z_pos",
+                "z_vel",
+                "z_acc",
             ].values.astype(np.float32)
 
             output_data = all_data[
@@ -230,26 +322,17 @@ with h5py.File(OUTPUT_FILE, "w") as f:
     f.create_dataset(
         "inputs",
         data=input_data,
-        compression="gzip",
-        compression_opts=4,
-        chunks=True,
     )
 
     f.create_dataset(
         "outputs",
         data=output_data,
-        compression="gzip",
-        compression_opts=4,
-        chunks=True,
     )
 
     if DO_NORMALISE:
         f.create_dataset(
             "norm_params",
             data=norm_params,
-            compression="gzip",
-            compression_opts=4,
-            chunks=True,
         )
 
 if DO_NORMALISE:
