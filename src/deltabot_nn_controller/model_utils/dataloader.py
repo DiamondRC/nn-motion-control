@@ -1,4 +1,5 @@
 import gc
+import logging
 import os
 
 import h5py
@@ -7,6 +8,8 @@ import psutil
 import torch
 import torch.multiprocessing as mp
 from torch.utils.data import DataLoader, Dataset, random_split
+
+logger = logging.getLogger(__name__)
 
 
 class PVT2DACDataset(Dataset):
@@ -52,7 +55,7 @@ class PVT2DACDataset(Dataset):
 
         # Log dataset loading
         if self.logging:
-            print("\nLoading dataset to RAM...")
+            logger.debug("Loading dataset to RAM...")
 
         # Check if we can send to RAM, otherwise fallback to on-demand loading
         available_memory = psutil.virtual_memory().total / (1024**3)
@@ -81,7 +84,7 @@ class PVT2DACDataset(Dataset):
                 # we don't need (persistent) workers or prefetching
                 self.loaded_ram = True
                 if self.logging:
-                    print(f"Loaded {len(self.data)} samples to RAM")
+                    logger.debug(f"Loaded {len(self.data)} samples to RAM")
 
         # Instantiate dataloader params
         self._auto_tune_dataloader()
@@ -134,11 +137,11 @@ class PVT2DACDataset(Dataset):
             self.num_workers = max(int(cpu_count * (self.cpu_core_util / 100)), 8)
             self.prefetch_factor = max(self.num_workers, 4)
             if self.logging:
-                print(
+                logger.debug(
                     f"Auto-detected: {cpu_count} cores, "
                     f"{ram_gb:.1f}GB RAM, {gpu_count} GPU(s)"
                 )
-            print(
+            logger.debug(
                 f"Using: num_workers={self.num_workers}, "
                 f"prefetch_factor={self.prefetch_factor}"
             )
@@ -146,11 +149,11 @@ class PVT2DACDataset(Dataset):
         # If autoconfiguration is disabled, use user-provided values.
         else:
             if self.cpu_core_util > 90:
-                print(
+                logger.debug(
                     f"WARNING: Using a high percentage of"
                     f"system CPU cores ({self.cpu_core_util})%"
                 )
-            print(
+            logger.debug(
                 f"Using manually set: self.num_workers={self.num_workers}, "
                 f"prefetch_factor={self.prefetch_factor}"
             )

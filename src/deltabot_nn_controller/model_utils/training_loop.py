@@ -1,5 +1,9 @@
+import logging
+
 import torch
 from torch import autocast
+
+logger = logging.getLogger(__name__)
 
 
 class Trainer:
@@ -66,18 +70,13 @@ class Trainer:
 
         # Return model shape and parameter count
         if self.logging:
-            print("\nParameter devices:")
+            logger.debug("Parameter devices:")
             for name, param in self.model.named_parameters():
-                print(f"  {name}: {param.device}, shape={param.shape}")
-            print(
-                f"GPU param count: "
+                logger.debug(f"{name}: {param.device}, shape={param.shape}")
+            logger.debug(
+                "GPU param count: "
                 f"{sum(1 for p in self.model.parameters() if p.device.type == 'cuda')}"
             )
-            print(
-                f"Model size: "
-                f"{sum(p.numel() * p.element_size() for p in self.model.parameters()) / 1e9:.2f}GB"  # noqa: E501
-            )
-            print(f"Baseline GPU mem: {torch.cuda.memory_allocated() / 1e9:.2f}GB")
 
     def profile_one_batch(self):
         """
@@ -87,16 +86,16 @@ class Trainer:
         checks for performance bottlenecks and log timing and memory usage.
         """
 
-        print("\nProfiling one batch...")
+        logger.debug("Profiling one batch...")
         data, labels = next(iter(self.val_loader))
         data, labels = data.to(self.device), labels.to(self.device)
 
-        print("Checking CUDA status before profiling")
+        logger.debug("Checking CUDA status before profiling")
         torch.cuda.reset_peak_memory_stats()
         start_event = torch.cuda.Event(enable_timing=True)
         end_event = torch.cuda.Event(enable_timing=True)
 
-        print("Running forward pass with autocast for profiling...")
+        logger.debug("Running forward pass with autocast for profiling...")
         start_event.record()
 
         # TODO - unify dtypes for profiling, training and future quant
@@ -107,10 +106,10 @@ class Trainer:
         end_event.record()
         end_event.synchronize()
 
-        print(f"Batch shape: {data.shape}")
-        print(f"Forward time: {start_event.elapsed_time(end_event):.2f}ms")
-        print(f"Peak GPU mem: {torch.cuda.max_memory_allocated() / 1e9:.2f}GB")
-        print(f"Output range: [{outputs.min()}, {outputs.max()}]")
+        logger.debug(f"Batch shape: {data.shape}")
+        logger.debug(f"Forward time: {start_event.elapsed_time(end_event):.2f}ms")
+        logger.debug(f"Peak GPU mem: {torch.cuda.max_memory_allocated() / 1e9:.2f}GB")
+        logger.debug(f"Output range: [{outputs.min()}, {outputs.max()}]")
 
     def _train_epoch(self):
         """
@@ -148,9 +147,9 @@ class Trainer:
             # Guard against NaN/Inf loss which can destabilize training
             if torch.isnan(loss) or torch.isinf(loss):
                 if torch.isnan(loss):
-                    print(f"NaN at batch {batch_idx}, skipping")
+                    logger.warning(f"NaN at batch {batch_idx}, skipping")
                 else:
-                    print(f"Inf at batch {batch_idx}, skipping")
+                    logger.warning(f"Inf at batch {batch_idx}, skipping")
 
                 if (batch_idx % self.accumulation_steps) == 0:  # Only if we zeroed
                     self.optimizer.zero_grad(set_to_none=True)
@@ -192,9 +191,9 @@ class Trainer:
                     loss = self.criterion(outputs, labels)
 
                 if torch.isnan(loss):
-                    print("NaN in validation, skipping")
+                    logger.warning("NaN in validation, skipping")
                 elif torch.isinf(loss):
-                    print("Inf in validation, skipping")
+                    logger.warning("Inf in validation, skipping")
                 else:
                     total_loss += loss.item()
 
@@ -228,7 +227,7 @@ class Trainer:
             self.val_losses.append(val_loss)
 
             if epoch % 10 == 0 or epoch == self.num_epochs - 1:
-                print(
+                logger.info(
                     f"Epoch {epoch + 1}/{self.num_epochs}, "
                     f"Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}"
                 )
@@ -245,6 +244,6 @@ class Trainer:
                 epochs_no_improve += 1
 
             if epochs_no_improve >= self.patience:
-                print(f"Early stopping triggered after {epoch + 1} epochs.")
-                print(f"The best model was at epoch {self.stopped_early}.")
+                logger.info(f"Early stopping triggered after {epoch + 1} epochs.")
+                logger.info(f"The best model was at epoch {self.stopped_early}.")
                 break

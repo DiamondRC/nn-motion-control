@@ -1,8 +1,11 @@
+import logging
+import logging.config
 import os
 import time
 
 import torch
 from model_utils.dataloader import PVT2DACDataset
+from model_utils.setup_logging import setup_logging
 from model_utils.test_saved_model import TestModel
 from model_utils.training_loop import Trainer
 from model_zoo.json_manager import load_config
@@ -28,7 +31,7 @@ NUM_WORKERS = 8
 PREFETCH_FACTOR = 4
 TRAIN_RATIO = 0.8
 VAL_RATIO = 0.1
-MAX_EPOCHS = 5000
+MAX_EPOCHS = 1
 PATIENCE = 350
 WINDOW_SIZE = 4
 MIN_DELTA = 1e-4
@@ -49,11 +52,9 @@ DISPLAY_TEST_NUM = 30  # Displays this many test points
 # Start timing model runtime
 start_time = time.perf_counter()
 
-# # Create the main logger
-# logging.basicConfig(level=logging.INFO)
-
-# # Log this file
-# logger = logging.getLogger(__name__)
+# Begin logging
+setup_logging()
+logger = logging.getLogger(__name__)
 
 
 # -------------------------------
@@ -61,16 +62,16 @@ start_time = time.perf_counter()
 # -------------------------------
 
 if DO_VERBOSE_LOGGING:
-    print("Torch version: ", torch.__version__)
+    logger.debug(f"Torch version: {torch.__version__}")
 
 if torch.cuda.is_available():
     if DO_VERBOSE_LOGGING:
-        print("CUDA version: ", torch.version.cuda)
-        print(f"Using CUDA device {torch.cuda.get_device_name(0)}")
+        logger.debug(f"CUDA version: {torch.version.cuda}")
+        logger.debug(f"Using CUDA device {torch.cuda.get_device_name(0)}")
     DEVICE = "cuda"
 else:
     # raise Exception("CUDA not available")
-    print("CUDA not available, using CPU (not recommended)")
+    logger.warning("CUDA not available, using CPU (not recommended)")
     DEVICE = "cpu"
 
 
@@ -130,27 +131,33 @@ trainer = Trainer(
 
 # Pass dummy data through model to verify forward pass and log initial stats
 if DO_VERBOSE_LOGGING:
-    print("\nProfiling model with dummy input...")
+    logger.debug("Profiling model with dummy input...")
     dummy_input = torch.randn(1, INPUT_SIZE * WINDOW_SIZE).to(DEVICE)
-    print(f"Dummy input shape: {dummy_input.shape}")
+    logger.debug(f"Dummy input shape: {dummy_input.shape}")
     with torch.no_grad():
         model_dummy_output = model(dummy_input)
-    print("Profiling model with dummy input... DONE")
+    logger.debug("Profiling model with dummy input... DONE")
 
-    print(f"Model sent to device: {next(model.parameters()).device}")
+    logger.debug(f"Model sent to device: {next(model.parameters()).device}")
 
-    print(f"First layer sample weights: {model.network[0].weight.flatten()[:5]}")
-    print(
-        f"First layer weight range: "
-        f"[{model.network[0].weight.min():.3f}, {model.network[0].weight.max():.3f}]",
+    logger.debug(
+        f"First layer sample weights: "
+        f"{model.network[0].weight.flatten()[:5].cpu().detach().numpy()}"
     )
-    print(f"Final layer sample weights: {model.network[-1].weight.flatten()[:5]}")
-    print(
-        f"Final layer weight range: "
-        f"[{model.network[-1].weight.min():.3f}, {model.network[-1].weight.max():.3f}]",
+    logger.debug("First layer weight range: ")
+    logger.debug(
+        f"[{model.network[0].weight.min():.3f}, {model.network[0].weight.max():.3f}]"
+    )
+    logger.debug(
+        f"Final layer sample weights: "
+        f"{model.network[-1].weight.flatten()[:5].cpu().detach().numpy()}"
+    )
+    logger.debug("Final layer weight range: ")
+    logger.debug(
+        f"[{model.network[-1].weight.min():.3f}, {model.network[-1].weight.max():.3f}]"
     )
 
-    print(
+    logger.debug(
         f"Model dummy output range: "
         f"[{model_dummy_output.min():.3f}, {model_dummy_output.max():.3f}]"
     )
@@ -158,16 +165,20 @@ if DO_VERBOSE_LOGGING:
 # Log input/output ranges for user data to verify normalisation,
 # then profile a single batch of data.
 if DO_VERBOSE_LOGGING:
-    print("\nProfiling user data...")
+    logger.debug("Profiling user data...")
     data_sample, label_sample = next(iter(train_loader.dataset))
-    print(f"Data Inputs range: [{data_sample.min():.3f}, {data_sample.max():.3f}]")
-    print(f"Data Targets range: [{label_sample.min():.3f}, {label_sample.max():.3f}]")
-    print("Profiling user data... DONE")
+    logger.debug(
+        f"Data Inputs range: [{data_sample.min():.3f}, {data_sample.max():.3f}]"
+    )
+    logger.debug(
+        f"Data Targets range: [{label_sample.min():.3f}, {label_sample.max():.3f}]"
+    )
+    logger.debug("Profiling user data... DONE")
     trainer.profile_one_batch()
 
-print("\nStarting training loop...")
+logger.info("Starting training loop...")
 trainer.train()
-print("Training loop complete.")
+logger.info("Training loop complete.")
 dataset.cleanup_dataloaders()
 
 
@@ -209,7 +220,7 @@ minutes = int((elapsed % 3600) // 60)
 seconds = elapsed % 60
 hms = f"{hours:02d}:{minutes:02d}:{seconds:06.3f}".rstrip("0").rstrip(":")
 
-print(f"\nModel training and testing took {hms} (Hours/Mins/Secs).")
+logger.debug(f"\nModel training and testing took {hms} (Hours/Mins/Secs).")
 
 
 # -------------------------------
@@ -219,4 +230,4 @@ print(f"\nModel training and testing took {hms} (Hours/Mins/Secs).")
 # Display the losses
 tester.plot_losses()
 
-print("\nFinished model execution.")
+logger.info("\nFinished model execution.")

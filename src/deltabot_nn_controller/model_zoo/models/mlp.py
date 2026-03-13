@@ -1,6 +1,9 @@
 import json
+import logging
 
 import torch.nn as nn
+
+logger = logging.getLogger(__name__)
 
 
 class MLP(nn.Module):
@@ -47,11 +50,9 @@ class MLP(nn.Module):
         input_size = config["input_size"] * window_size
 
         if self.logging:
-            print(
-                f"\nBuilding MLP with input size {input_size}"
-                f"\nLayerNorm enabled: {config.get('layer_norm', False)}"
-                f"\nUsing Dropout: {config.get('dropout')}"
-            )
+            logger.debug(f"Building MLP with input size {input_size}")
+            logger.debug(f"LayerNorm enabled: {config.get('layer_norm', False)}")
+            logger.debug(f"Using Dropout: {config.get('dropout')}")
 
         layers = []
         prev_size = input_size

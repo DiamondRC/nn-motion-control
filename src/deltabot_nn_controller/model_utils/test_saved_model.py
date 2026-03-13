@@ -1,7 +1,11 @@
+import logging
+
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from torch import autocast
+
+logger = logging.getLogger(__name__)
 
 
 class TestModel:
@@ -160,32 +164,21 @@ class TestModel:
         Calculates some common metrics to benchmark the performance of the model.
         """
 
-        print("\nDisplaying some model predictions against truth values:")
-        print(
-            f"\n{'-' * 47}"
-            f"\n{'Axis':>4} | {'Predicted':>12} | {'Actual':>12} | {'RMSE':>10}"
-            f"\n{'-' * 47}"
-        )
+        logger.info("Displaying some model predictions against truth values:")
+        logger.info(f"{'-' * 47}")
+        logger.info(f"{'Axis':>4} | {'Predicted':>12} | {'Actual':>12} | {'RMSE':>10}")
+        logger.info(f"{'-' * 47}")
+
         for i in range(0, self.test_display_num, 3):
             # Display individually to see results easily
             preds = self.all_predictions_denorm[i : i + 3]
             targets = self.all_targets_denorm[i : i + 3]
-            # diffs = np.abs(preds - targets) / (np.abs(targets) + epsilon) * 100
             diffs = np.sqrt((preds - targets) ** 2)
 
             axes = ["x", "y", "z"]
             for j, (p, t, d) in enumerate(zip(preds, targets, diffs, strict=False)):
-                print(f"{axes[j]:>4} | {p:12.3f} | {t:12.3f} | {d:9.3f}%")
-            print(f"{'-' * 47}")
-
-            # # Couple related data for clarity
-            # print(
-            #     f"\nModel predicts ({preds[0]:.3f}, {preds[1]:.3f}, {preds[2]:.3f}) "
-            #     f"versus ({targets[0]:.3f}, {targets[1]:.3f}, {targets[2]:.3f}) "
-            #     f"(DAC Values)\n"
-            #     f"That's a difference of "
-            #     f"({diffs[0]:.3f}%, {diffs[1]:.3f}%, {diffs[2]:.3f}%)!\n"
-            # )
+                logger.info(f"{axes[j]:>4} | {p:12.3f} | {t:12.3f} | {d:9.3f}%")
+            logger.info(f"{'-' * 47}")
 
         # Common regression metrics
         self.mae = np.mean(
@@ -195,12 +188,10 @@ class TestModel:
             np.mean((self.all_predictions_denorm - self.all_targets_denorm) ** 2)
         ).item()
 
-        print(
-            f"\nCommon metrics:"
-            f"\nAvg Loss: {self.avg_loss:.4f}"
-            f"\nAvg MAE: {self.mae:.4f}"
-            f"\nAvg RMSE: {self.rmse:.4f}"
-        )
+        logger.info("Common metrics:")
+        logger.info(f"Avg Loss: {self.avg_loss:.4f}")
+        logger.info(f"Avg MAE: {self.mae:.4f}")
+        logger.info(f"Avg RMSE: {self.rmse:.4f}")
 
     def test(self):
         """
@@ -208,7 +199,7 @@ class TestModel:
         """
 
         # Load best model and test
-        print("\nLoading best model for testing...")
+        logger.info("Loading best model for testing...")
         self.model.load_state_dict(torch.load(self.save_path))
 
         # Test the loaded model

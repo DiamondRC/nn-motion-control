@@ -1,0 +1,34 @@
+{
+    "version": 1,
+    "disable_existing_loggers": false,
+    "formatters": {
+        "standard": {
+            "format": "%(asctime)s [%(levelname)-6s] %(name)s: %(message)s"
+        },
+        "console": {
+            "format": "%(message)s"
+        }
+    },
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+            "level": "INFO",
+            "formatter": "console",
+            "stream": "ext://sys.stdout"
+        }
+    },
+    "root": {
+        "level": "DEBUG",
+        "handlers": [
+            "console"
+        ]
+    },
+    "loggers": {
+        "app.auth": {
+            "level": "DEBUG"
+        },
+        "thirdparty": {
+            "level": "WARNING"
+        }
+    }
+}
