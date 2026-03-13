@@ -2,10 +2,9 @@ import json
 import logging
 import logging.config
 import logging.handlers
-from datetime import datetime
 
 
-def setup_logging():
+def setup_logging(logging_path, timestamp):
     """
     We want logs to autogenerate with a unqiue name per run,
     which is not possible to specify in the json config.
@@ -22,9 +21,7 @@ def setup_logging():
     with open("logging.json") as f:
         config = json.load(f)
 
-    # Create timestamped rotating file handler
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    filename = f"logs/{timestamp}.log"
+    filename = f"{logging_path}/{timestamp}.log"
 
     # Set properties of the logging json
     file_handler = logging.handlers.RotatingFileHandler(

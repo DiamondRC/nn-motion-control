@@ -1,4 +1,5 @@
 import logging
+import os
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -19,6 +20,8 @@ class TestModel:
         early_stop_epoch,
         normalisation_consts,
         save_path,
+        plot_path,
+        plot_name,
         device,
         logging,
         test_display_num,
@@ -31,6 +34,8 @@ class TestModel:
         self.criterion = criterion_class()
         self.early_stop_epoch = early_stop_epoch
         self.save_path = save_path
+        self.plot_path = plot_path
+        self.plot_name = plot_name
         self.device = device
         self.test_display_num = test_display_num
 
@@ -221,4 +226,7 @@ class TestModel:
         plt.title("Training and Validation Loss")
         plt.grid()
         plt.legend()
-        plt.show()
+
+        plot_name = os.path.join(self.plot_path, f"{self.plot_name}.svg")
+        plt.savefig(fname=plot_name, format="svg", bbox_inches="tight")
+        plt.close()

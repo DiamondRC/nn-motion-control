@@ -2,6 +2,7 @@ import logging
 import logging.config
 import os
 import time
+from datetime import datetime
 
 import torch
 from model_utils.dataloader import PVT2DACDataset
@@ -31,7 +32,7 @@ NUM_WORKERS = 8
 PREFETCH_FACTOR = 4
 TRAIN_RATIO = 0.8
 VAL_RATIO = 0.1
-MAX_EPOCHS = 1
+MAX_EPOCHS = 3
 PATIENCE = 350
 WINDOW_SIZE = 4
 MIN_DELTA = 1e-4
@@ -43,6 +44,7 @@ MODEL_SAVE_PATH = (
 SEED = 42
 INPUT_SIZE = 13  # controls dummy test size
 DISPLAY_TEST_NUM = 30  # Displays this many test points
+LOGGING_PATH = "logs/"
 
 
 # -------------------------------
@@ -50,10 +52,11 @@ DISPLAY_TEST_NUM = 30  # Displays this many test points
 # -------------------------------
 
 # Start timing model runtime
+timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 start_time = time.perf_counter()
 
 # Begin logging
-setup_logging()
+setup_logging(LOGGING_PATH, timestamp)
 logger = logging.getLogger(__name__)
 
 
@@ -200,6 +203,8 @@ tester = TestModel(
     normalisation_consts=norm_consts,
     device=DEVICE,
     save_path=MODEL_SAVE_PATH,
+    plot_path=LOGGING_PATH,
+    plot_name=timestamp,
     logging=DO_VERBOSE_LOGGING,
     test_display_num=DISPLAY_TEST_NUM,
 )
@@ -220,7 +225,7 @@ minutes = int((elapsed % 3600) // 60)
 seconds = elapsed % 60
 hms = f"{hours:02d}:{minutes:02d}:{seconds:06.3f}".rstrip("0").rstrip(":")
 
-logger.debug(f"\nModel training and testing took {hms} (Hours/Mins/Secs).")
+logger.debug(f"Model training and testing took {hms} (Hours/Mins/Secs).")
 
 
 # -------------------------------
@@ -230,4 +235,4 @@ logger.debug(f"\nModel training and testing took {hms} (Hours/Mins/Secs).")
 # Display the losses
 tester.plot_losses()
 
-logger.info("\nFinished model execution.")
+logger.info("Finished model execution.")

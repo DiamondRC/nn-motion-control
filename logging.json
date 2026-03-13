@@ -29,6 +29,14 @@
         },
         "thirdparty": {
             "level": "WARNING"
+        },
+        "matplotlib": {
+            "level": "WARNING",
+            "propagate": false
+        },
+        "PIL": {
+            "level": "WARNING",
+            "propagate": false
         }
     }
 }
