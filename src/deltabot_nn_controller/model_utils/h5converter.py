@@ -88,11 +88,15 @@ def parse_all_files(data_dir):
                 velocities_unpadded = np.diff(positions, axis=1) / dt_safe  # (3, n-1)
 
                 # Accelerations from unpadded velocities
-                accelerations = (
+                accelerations_unpadded = (
                     np.diff(velocities_unpadded, axis=1) / dt_safe[:-1]
                 )  # (3, n-2)
 
-                # Pad both
+                # Jerk from acceleration
+
+                jerks_unpadded = np.diff(accelerations_unpadded, axis=1) / dt_safe[:-2]
+
+                # Pad all
                 velocities_padded = np.pad(
                     velocities_unpadded,
                     ((0, 0), (1, 0)),
@@ -100,7 +104,13 @@ def parse_all_files(data_dir):
                     constant_values=np.nan,
                 )
                 accelerations_padded = np.pad(
-                    accelerations, ((0, 0), (2, 0)), "constant", constant_values=np.nan
+                    accelerations_unpadded,
+                    ((0, 0), (2, 0)),
+                    "constant",
+                    constant_values=np.nan,
+                )
+                jerks_padded = np.pad(
+                    jerks_unpadded, ((0, 0), (3, 0)), "constant", constant_values=np.nan
                 )
 
                 # Unpack
@@ -110,6 +120,14 @@ def parse_all_files(data_dir):
                 df["x_acc"] = accelerations_padded[0]
                 df["y_acc"] = accelerations_padded[1]
                 df["z_acc"] = accelerations_padded[2]
+                df["x_jer"] = jerks_padded[0]
+                df["y_jer"] = jerks_padded[1]
+                df["z_jer"] = jerks_padded[2]
+
+                # Shift the DAC values
+                df["x_input_real"] = df["x_input_real"].shift(1)
+                df["y_input_real"] = df["y_input_real"].shift(1)
+                df["z_input_real"] = df["z_input_real"].shift(1)
 
                 df = df.dropna()
 
@@ -120,12 +138,15 @@ def parse_all_files(data_dir):
                         "x_pos",
                         "x_vel",
                         "x_acc",
+                        "x_jer",
                         "y_pos",
                         "y_vel",
                         "y_acc",
+                        "y_jer",
                         "z_pos",
                         "z_vel",
                         "z_acc",
+                        "z_jer",
                         "x_input_real",
                         "y_input_real",
                         "z_input_real",
@@ -154,12 +175,24 @@ all_data = parse_all_files(DATA_DIR)
 # Create one dataset
 all_data = collect_files(all_data)
 
+# plt.figure(figsize=(10, 5))
+# plt.plot(all_data["x_pos"], label="pos")
+# plt.plot(all_data["x_vel"], label="vel")
+# plt.plot(all_data["x_acc"], label="acc")
+# plt.plot(all_data["x_jer"], label="jer")
+# plt.xlabel("time")
+# plt.ylabel("Loss")
+# plt.title("Data Analysis")
+# plt.grid()
+# plt.legend()
+# plt.show()
+
 # Split into input and output data and write to HDF5
 with h5py.File(OUTPUT_FILE, "w") as f:
     # Cast everything as float32 to match training format
     if DO_NORMALISE:
         # Normalise interferometer data
-        def normalise_column(col):
+        def normalise_column(col, label):
             # Keep mean/std as float64 for accurate denormalisation later
             col_f64 = col.astype(np.float64)
             input_mean = col_f64.mean()
@@ -170,46 +203,66 @@ with h5py.File(OUTPUT_FILE, "w") as f:
                 col.astype(np.float32) - input_mean.astype(np.float32)
             ) / input_std.astype(np.float32)
 
-            print(f"Max/min norm column: {col_norm.max()}, {col_norm.min()}")
+            print(
+                f"\nNormalising {label}..."
+                f"\nMax/min norm column: {col_norm.max()}, {col_norm.min()}"
+            )
 
             return col_norm, input_mean, input_std
 
         # Normalise each PVT axis and store the mean/std for later denormalisation
-        all_data["timestep"], t_mean, t_std = normalise_column(all_data["timestep"])
-        all_data["x_pos"], x_pos_mean, x_pos_std = normalise_column(all_data["x_pos"])
-        all_data["y_pos"], y_pos_mean, y_pos_std = normalise_column(all_data["y_pos"])
-        all_data["z_pos"], z_pos_mean, z_pos_std = normalise_column(all_data["z_pos"])
+        all_data["timestep"], t_mean, t_std = normalise_column(
+            all_data["timestep"], "timestep"
+        )
+        all_data["x_pos"], x_pos_mean, x_pos_std = normalise_column(
+            all_data["x_pos"], "x_pos"
+        )
+        all_data["y_pos"], y_pos_mean, y_pos_std = normalise_column(
+            all_data["y_pos"], "y_pos"
+        )
+        all_data["z_pos"], z_pos_mean, z_pos_std = normalise_column(
+            all_data["z_pos"], "z_pos"
+        )
 
         # Normalise each DAC axis and store the mean/std for later denormalisation
         all_data["x_input_real"], x_dac_mean, x_dac_std = normalise_column(
-            all_data["x_input_real"]
+            all_data["x_input_real"], "x_input_real"
         )
         all_data["y_input_real"], y_dac_mean, y_dac_std = normalise_column(
-            all_data["y_input_real"]
+            all_data["y_input_real"], "y_input_real"
         )
         all_data["z_input_real"], z_dac_mean, z_dac_std = normalise_column(
-            all_data["z_input_real"]
+            all_data["z_input_real"], "z_input_real"
         )
 
         if DO_PVT:
             # Normalise velocity and acceleration values, store results
             all_data["x_vel"], x_vel_mean, x_vel_std = normalise_column(
-                all_data["x_vel"]
+                all_data["x_vel"], "x_vel"
             )
             all_data["x_acc"], x_acc_mean, x_acc_std = normalise_column(
-                all_data["x_acc"]
+                all_data["x_acc"], "x_acc"
+            )
+            all_data["x_jer"], x_jer_mean, x_jer_std = normalise_column(
+                all_data["x_jer"], "x_jer"
             )
             all_data["y_vel"], y_vel_mean, y_vel_std = normalise_column(
-                all_data["y_vel"]
+                all_data["y_vel"], "y_vel"
             )
             all_data["y_acc"], y_acc_mean, y_acc_std = normalise_column(
-                all_data["y_acc"]
+                all_data["y_acc"], "y_acc"
+            )
+            all_data["y_jer"], y_jer_mean, y_jer_std = normalise_column(
+                all_data["y_jer"], "y_jer"
             )
             all_data["z_vel"], z_vel_mean, z_vel_std = normalise_column(
-                all_data["z_vel"]
+                all_data["z_vel"], "z_vel"
             )
             all_data["z_acc"], z_acc_mean, z_acc_std = normalise_column(
-                all_data["z_acc"]
+                all_data["z_acc"], "z_acc"
+            )
+            all_data["z_jer"], z_jer_mean, z_jer_std = normalise_column(
+                all_data["z_jer"], "z_jer"
             )
 
         # Gather denormalisation parameters into one array for later use in inference
@@ -224,18 +277,24 @@ with h5py.File(OUTPUT_FILE, "w") as f:
                     x_vel_std,
                     x_acc_mean,
                     x_acc_std,
+                    x_jer_mean,
+                    x_jer_std,
                     y_pos_mean,
                     y_pos_std,
                     y_vel_mean,
                     y_vel_std,
                     y_acc_mean,
                     y_acc_std,
+                    y_jer_mean,
+                    y_jer_std,
                     z_pos_mean,
                     z_pos_std,
                     z_vel_mean,
                     z_vel_std,
                     z_acc_mean,
                     z_acc_std,
+                    z_jer_mean,
+                    z_jer_std,
                     x_dac_mean,
                     x_dac_std,
                     y_dac_mean,
@@ -265,19 +324,22 @@ with h5py.File(OUTPUT_FILE, "w") as f:
             )
 
         if DO_PVT:
-            print("Writing PVT dataset with normalisation params...")
+            print("\nWriting PVT dataset with normalisation params...")
             input_data = all_data[
                 [
                     "timestep",
                     "x_pos",
                     "x_vel",
                     "x_acc",
+                    "x_jer",
                     "y_pos",
                     "y_vel",
                     "y_acc",
+                    "y_jer",
                     "z_pos",
                     "z_vel",
                     "z_acc",
+                    "z_jer",
                 ]
             ].values
             output_data = all_data[
@@ -296,12 +358,15 @@ with h5py.File(OUTPUT_FILE, "w") as f:
                 "x_pos",
                 "x_vel",
                 "x_acc",
+                "x_jer",
                 "y_pos",
                 "y_vel",
                 "y_acc",
+                "y_jer",
                 "z_pos",
                 "z_vel",
                 "z_acc",
+                "z_jer",
             ].values.astype(np.float32)
 
             output_data = all_data[

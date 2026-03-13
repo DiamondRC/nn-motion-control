@@ -8,8 +8,6 @@ from model_utils.training_loop import Trainer
 from model_zoo.json_manager import load_config
 from model_zoo.models.mlp import MLP
 from torch.amp import GradScaler
-
-# from torch.cuda.amp import GradScaler
 from torch.nn import MSELoss
 from torch.optim import Adam
 
@@ -30,8 +28,8 @@ NUM_WORKERS = 8
 PREFETCH_FACTOR = 4
 TRAIN_RATIO = 0.8
 VAL_RATIO = 0.1
-MAX_EPOCHS = 1
-PATIENCE = 250
+MAX_EPOCHS = 5000
+PATIENCE = 350
 WINDOW_SIZE = 4
 MIN_DELTA = 1e-4
 LEARNING_RATE = 3e-4
@@ -40,13 +38,22 @@ MODEL_SAVE_PATH = (
     "src/deltabot_nn_controller/model_zoo/models/model_states/best_model.pth"
 )
 SEED = 42
-INPUT_SIZE = 10  # controls dummy test size
+INPUT_SIZE = 13  # controls dummy test size
+DISPLAY_TEST_NUM = 30  # Displays this many test points
 
 
 # -------------------------------
-# Measure Execution Time
+# Begin logging
 # -------------------------------
+
+# Start timing model runtime
 start_time = time.perf_counter()
+
+# # Create the main logger
+# logging.basicConfig(level=logging.INFO)
+
+# # Log this file
+# logger = logging.getLogger(__name__)
 
 
 # -------------------------------
@@ -183,6 +190,7 @@ tester = TestModel(
     device=DEVICE,
     save_path=MODEL_SAVE_PATH,
     logging=DO_VERBOSE_LOGGING,
+    test_display_num=DISPLAY_TEST_NUM,
 )
 
 tester.test()

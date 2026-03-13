@@ -1,13 +1,15 @@
 {
   "network_type": "mlp",
-  "input_size": 10,
+  "input_size": 13,
   "output_size": 3,
   "hidden_layers": [
-    1024,
-    512,
+    256,
+    256,
+    128,
     128
   ],
   "activations": [
+    "ReLU",
     "ReLU",
     "ReLU",
     "ReLU"
