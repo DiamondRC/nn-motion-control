@@ -1,7 +1,8 @@
 import json
 import os
 
-TESTING = "src/deltabot_nn_controller/model_zoo/basic_mlp.json"
+# TESTING = "src/deltabot_nn_controller/model_zoo/basic_mlp.json"
+TESTING = "src/deltabot_nn_controller/model_zoo/plant_mlp.json"
 
 
 def load_config(file_path=TESTING):

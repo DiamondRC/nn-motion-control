@@ -32,9 +32,8 @@ NUM_WORKERS = 8
 PREFETCH_FACTOR = 4
 TRAIN_RATIO = 0.8
 VAL_RATIO = 0.1
-MAX_EPOCHS = 3
-PATIENCE = 350
-WINDOW_SIZE = 4
+MAX_EPOCHS = 5000
+PATIENCE = 200
 MIN_DELTA = 1e-4
 LEARNING_RATE = 3e-4
 ACCUMULATION_STEPS = 1  # Set >1 to simulate larger batch sizes on limited hardware
@@ -42,8 +41,9 @@ MODEL_SAVE_PATH = (
     "src/deltabot_nn_controller/model_zoo/models/model_states/best_model.pth"
 )
 SEED = 42
-INPUT_SIZE = 13  # controls dummy test size
-DISPLAY_TEST_NUM = 30  # Displays this many test points
+INPUT_SIZE = 16  # controls dummy test size
+WINDOW_SIZE = 1  # controls dummy window size
+DISPLAY_TEST_NUM = 3  # Displays this many test points
 LOGGING_PATH = "logs/"
 
 

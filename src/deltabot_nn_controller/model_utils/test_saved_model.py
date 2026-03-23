@@ -40,38 +40,66 @@ class TestModel:
         self.test_display_num = test_display_num
 
         # Unpack normalisation arguements
-        self.t_mean = (normalisation_consts[0],)
-        self.t_std = (normalisation_consts[1],)
-        self.x_pos_mean = (normalisation_consts[2],)
-        self.x_pos_std = (normalisation_consts[3],)
-        self.x_vel_mean = (normalisation_consts[4],)
-        self.x_vel_std = (normalisation_consts[5],)
-        self.x_acc_mean = (normalisation_consts[6],)
-        self.x_acc_std = (normalisation_consts[7],)
-        self.x_jer_mean = (normalisation_consts[8],)
-        self.x_jer_std = (normalisation_consts[9],)
-        self.y_pos_mean = (normalisation_consts[10],)
-        self.y_pos_std = (normalisation_consts[11],)
-        self.y_vel_mean = (normalisation_consts[12],)
-        self.y_vel_std = (normalisation_consts[13],)
-        self.y_acc_mean = (normalisation_consts[14],)
-        self.y_acc_std = (normalisation_consts[15],)
-        self.y_jer_mean = (normalisation_consts[16],)
-        self.y_jer_std = (normalisation_consts[17],)
-        self.z_pos_mean = (normalisation_consts[18],)
-        self.z_pos_std = (normalisation_consts[19],)
-        self.z_vel_mean = (normalisation_consts[20],)
-        self.z_vel_std = (normalisation_consts[21],)
-        self.z_acc_mean = (normalisation_consts[22],)
-        self.z_acc_std = (normalisation_consts[23],)
-        self.z_jer_mean = (normalisation_consts[24],)
-        self.z_jer_std = (normalisation_consts[25],)
-        self.x_dac_mean = (normalisation_consts[26],)
-        self.x_dac_std = (normalisation_consts[27],)
-        self.y_dac_mean = (normalisation_consts[28],)
-        self.y_dac_std = (normalisation_consts[29],)
-        self.z_dac_mean = (normalisation_consts[30],)
-        self.z_dac_std = (normalisation_consts[31],)
+        self.normalisation_consts = normalisation_consts
+        # input state
+        self.t_mean = normalisation_consts[0]
+        self.t_std = normalisation_consts[1]
+        self.x_pos_mean = normalisation_consts[2]
+        self.x_pos_std = normalisation_consts[3]
+        self.x_vel_mean = normalisation_consts[4]
+        self.x_vel_std = normalisation_consts[5]
+        self.x_acc_mean = normalisation_consts[6]
+        self.x_acc_std = normalisation_consts[7]
+        self.x_jer_mean = normalisation_consts[8]
+        self.x_jer_std = normalisation_consts[9]
+        self.y_pos_mean = normalisation_consts[10]
+        self.y_pos_std = normalisation_consts[11]
+        self.y_vel_mean = normalisation_consts[12]
+        self.y_vel_std = normalisation_consts[13]
+        self.y_acc_mean = normalisation_consts[14]
+        self.y_acc_std = normalisation_consts[15]
+        self.y_jer_mean = normalisation_consts[16]
+        self.y_jer_std = normalisation_consts[17]
+        self.z_pos_mean = normalisation_consts[18]
+        self.z_pos_std = normalisation_consts[19]
+        self.z_vel_mean = normalisation_consts[20]
+        self.z_vel_std = normalisation_consts[21]
+        self.z_acc_mean = normalisation_consts[22]
+        self.z_acc_std = normalisation_consts[23]
+        self.z_jer_mean = normalisation_consts[24]
+        self.z_jer_std = normalisation_consts[25]
+        # dac
+        self.x_dac_mean = normalisation_consts[26]
+        self.x_dac_std = normalisation_consts[27]
+        self.y_dac_mean = normalisation_consts[28]
+        self.y_dac_std = normalisation_consts[29]
+        self.z_dac_mean = normalisation_consts[30]
+        self.z_dac_std = normalisation_consts[31]
+        # next state
+        self.x_pos_nxt_mean = normalisation_consts[32]
+        self.x_pos_nxt_std = normalisation_consts[33]
+        self.x_vel_nxt_mean = normalisation_consts[34]
+        self.x_vel_nxt_std = normalisation_consts[35]
+        self.x_acc_nxt_mean = normalisation_consts[36]
+        self.x_acc_nxt_std = normalisation_consts[37]
+        self.x_jer_nxt_mean = normalisation_consts[38]
+        self.x_jer_nxt_std = normalisation_consts[39]
+        self.y_pos_nxt_mean = normalisation_consts[40]
+        self.y_pos_nxt_std = normalisation_consts[41]
+        self.y_vel_nxt_mean = normalisation_consts[42]
+        self.y_vel_nxt_std = normalisation_consts[43]
+        self.y_acc_nxt_mean = normalisation_consts[44]
+        self.y_acc_nxt_std = normalisation_consts[45]
+        self.y_jer_nxt_mean = normalisation_consts[46]
+        self.y_jer_nxt_std = normalisation_consts[47]
+        self.z_pos_nxt_mean = normalisation_consts[48]
+        self.z_pos_nxt_std = normalisation_consts[49]
+        self.z_vel_nxt_mean = normalisation_consts[50]
+        self.z_vel_nxt_std = normalisation_consts[51]
+        self.z_acc_nxt_mean = normalisation_consts[52]
+        self.z_acc_nxt_std = normalisation_consts[53]
+        self.z_jer_nxt_mean = normalisation_consts[54]
+        self.z_jer_nxt_std = normalisation_consts[55]
 
     def _testing_loop(self):
         """
@@ -105,42 +133,6 @@ class TestModel:
         self.all_predictions = torch.tensor(all_predictions)
         self.all_targets = torch.tensor(all_targets)
 
-        def _denormalise_inputs(inputs):
-            inputs = np.array(inputs)
-
-            stds = np.array(
-                [
-                    self.t_std,
-                    self.x_pos_std,
-                    self.x_vel_std,
-                    self.x_acc_std,
-                    self.y_pos_std,
-                    self.y_vel_std,
-                    self.y_acc_std,
-                    self.z_pos_std,
-                    self.z_vel_std,
-                    self.z_acc_std,
-                ]
-            )
-            means = np.array(
-                [
-                    self.t_mean,
-                    self.x_pos_mean,
-                    self.x_vel_mean,
-                    self.x_acc_mean,
-                    self.y_pos_mean,
-                    self.y_vel_mean,
-                    self.y_acc_mean,
-                    self.z_pos_mean,
-                    self.z_vel_mean,
-                    self.z_acc_mean,
-                ]
-            )
-
-            denormalize = np.add(np.multiply(inputs.astype(np.float64), stds), means)
-
-            return denormalize
-
         def _denormalise_outputs(outputs):
             outputs = np.array(outputs)
 
@@ -159,10 +151,64 @@ class TestModel:
 
             return denormalize
 
+        def _denorm_outputs(outputs):
+            """
+            Used for plant state outputs
+            """
+            outputs = np.array(outputs)
+
+            # Split into states
+            n_points = len(outputs) // 13
+            outputs_reshaped = outputs.reshape(13, n_points)
+
+            stds = np.array(
+                [
+                    self.t_std,
+                    self.x_pos_nxt_std,
+                    self.x_vel_nxt_std,
+                    self.x_acc_nxt_std,
+                    self.x_jer_nxt_std,
+                    self.y_pos_nxt_std,
+                    self.y_vel_nxt_std,
+                    self.y_acc_nxt_std,
+                    self.y_jer_nxt_std,
+                    self.z_pos_nxt_std,
+                    self.z_vel_nxt_std,
+                    self.z_acc_nxt_std,
+                    self.z_jer_nxt_std,
+                ]
+            )
+            means = np.array(
+                [
+                    self.t_mean,
+                    self.x_pos_nxt_mean,
+                    self.x_vel_nxt_mean,
+                    self.x_acc_nxt_mean,
+                    self.x_jer_nxt_mean,
+                    self.y_pos_nxt_mean,
+                    self.y_vel_nxt_mean,
+                    self.y_acc_nxt_mean,
+                    self.y_jer_nxt_mean,
+                    self.z_pos_nxt_mean,
+                    self.z_vel_nxt_mean,
+                    self.z_acc_nxt_mean,
+                    self.z_jer_nxt_mean,
+                ]
+            )
+
+            # Add new axis for broadcasting (13,) -> (13,1)
+            stds = stds[:, np.newaxis]  # Now shape: (13, 1)
+            means = means[:, np.newaxis]
+
+            denormalized = (outputs_reshaped.astype(np.float64) * stds) + means
+            # denormalize = denormalized.ravel()  # flatten back to 1D
+
+            return denormalized
+
         # Denormalise Data
         # self.all_inputs_denorm = _denormalise_inputs()
-        self.all_predictions_denorm = _denormalise_outputs(all_predictions)
-        self.all_targets_denorm = _denormalise_outputs(all_targets)
+        self.all_predictions_denorm = _denorm_outputs(all_predictions)
+        self.all_targets_denorm = _denorm_outputs(all_targets)
 
     def _run_metrics(self):
         """
@@ -170,20 +216,40 @@ class TestModel:
         """
 
         logger.info("Displaying some model predictions against truth values:")
-        logger.info(f"{'-' * 47}")
-        logger.info(f"{'Axis':>4} | {'Predicted':>12} | {'Actual':>12} | {'RMSE':>10}")
-        logger.info(f"{'-' * 47}")
+        logger.info(f"{'-' * 62}")
+        logger.info(
+            f"{'State':>8} | {'Predicted':>16} | {'Actual':>16} | {'Diff (%)':>12}"
+        )
+        logger.info(f"{'-' * 62}")
 
-        for i in range(0, self.test_display_num, 3):
-            # Display individually to see results easily
-            preds = self.all_predictions_denorm[i : i + 3]
-            targets = self.all_targets_denorm[i : i + 3]
-            diffs = np.sqrt((preds - targets) ** 2)
+        preds = self.all_predictions_denorm[:, : self.test_display_num]
+        targets = self.all_targets_denorm[:, : self.test_display_num]
+        diffs = np.sqrt((preds - targets) ** 2)
 
-            axes = ["x", "y", "z"]
-            for j, (p, t, d) in enumerate(zip(preds, targets, diffs, strict=False)):
-                logger.info(f"{axes[j]:>4} | {p:12.3f} | {t:12.3f} | {d:9.3f}%")
-            logger.info(f"{'-' * 47}")
+        axes = [
+            "times",
+            "x_pos",
+            "x_vel",
+            "x_acc",
+            "x_jer",
+            "y_pos",
+            "y_vel",
+            "y_acc",
+            "y_jer",
+            "z_pos",
+            "z_vel",
+            "z_acc",
+            "z_jer",
+        ]
+
+        no_states = len(preds[:, 0])
+        for i in range(0, self.test_display_num):
+            for j in range(0, no_states):
+                p = preds[j, i]
+                t = targets[j, i]
+                d = diffs[j, i]
+                logger.info(f"{axes[j]:>8} | {p:>16.4f} | {t:>16.4f} | {d:>16.4f}")
+            logger.info(f"{'-' * 62}")
 
         # Common regression metrics
         self.mae = np.mean(
