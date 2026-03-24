@@ -217,11 +217,10 @@ class TestModel:
 
         logger.info("Displaying some model predictions against truth values:")
         logger.info(f"{'-' * 62}")
-        logger.info(
-            f"{'State':>8} | {'Predicted':>16} | {'Actual':>16} | {'Diff (%)':>12}"
-        )
+        logger.info(f"{'State':>8} | {'Predicted':>16} | {'Actual':>16} | {'Diff':>12}")
         logger.info(f"{'-' * 62}")
 
+        # Take a few predictions and targets to benchmark the model
         preds = self.all_predictions_denorm[:, : self.test_display_num]
         targets = self.all_targets_denorm[:, : self.test_display_num]
         diffs = np.sqrt((preds - targets) ** 2)
@@ -242,6 +241,7 @@ class TestModel:
             "z_jer",
         ]
 
+        # Display model prediction against target
         no_states = len(preds[:, 0])
         for i in range(0, self.test_display_num):
             for j in range(0, no_states):
@@ -251,18 +251,54 @@ class TestModel:
                 logger.info(f"{axes[j]:>8} | {p:>16.4f} | {t:>16.4f} | {d:>16.4f}")
             logger.info(f"{'-' * 62}")
 
-        # Common regression metrics
-        self.mae = np.mean(
-            np.abs(self.all_predictions_denorm - self.all_targets_denorm)
-        ).item()
-        self.rmse = np.sqrt(
-            np.mean((self.all_predictions_denorm - self.all_targets_denorm) ** 2)
-        ).item()
+        def _calculate_mae(pred, tar):
+            return np.mean(np.abs(pred - tar)).item()
 
+        def _calculate_rmse(pred, tar):
+            return np.sqrt(np.mean((pred - tar) ** 2)).item()
+
+        def _calculate_percentiles(pred, tar, ps=(95, 99)):
+            set = np.sqrt((pred - tar) ** 2)
+            return {p: np.percentile(set, p).item() for p in ps}
+
+        def _calculate_metrics(pred, tar, name):
+            # Calc MAE, RMSE
+            mae = _calculate_mae(pred, tar)
+            rmse = _calculate_rmse(pred, tar)
+
+            abs_p = _calculate_percentiles(pred, tar)
+
+            # Return values for logging
+            logger.info(f"{name} 95% Abs Err: {abs_p[95]:.2f}%")
+            logger.info(f"{name} 99% Abs Err: {abs_p[99]:.2f}%")
+            logger.info(f"{name} MAE: {mae:.4f}")
+            logger.info(f"{name} RMSE: {rmse:.4f}")
+            logger.info(f"{'-' * 62}")
+
+        # Common regression metrics
+        self.avg_mae = _calculate_mae(
+            self.all_predictions_denorm, self.all_targets_denorm
+        )
+        self.avg_rmse = _calculate_rmse(
+            self.all_predictions_denorm, self.all_targets_denorm
+        )
+
+        # Return average metrics for whole run
         logger.info("Common metrics:")
+        logger.info(f"{'-' * 62}")
         logger.info(f"Avg Loss: {self.avg_loss:.4f}")
-        logger.info(f"Avg MAE: {self.mae:.4f}")
-        logger.info(f"Avg RMSE: {self.rmse:.4f}")
+        logger.info(f"Avg MAE: {self.avg_mae:.4f}")
+        logger.info(f"Avg RMSE: {self.avg_rmse:.4f}")
+
+        # Return metric for each item
+        logger.info("Variable specific metrics:")
+        logger.info(f"{'-' * 62}")
+        for idx, axis in enumerate(axes):
+            _calculate_metrics(
+                self.all_predictions_denorm[idx],
+                self.all_targets_denorm[idx],
+                axis,
+            )
 
     def test(self):
         """

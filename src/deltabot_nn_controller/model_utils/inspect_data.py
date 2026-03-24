@@ -6,6 +6,8 @@ OUTPUT_FILE = "./data/pvt_to_dac_training.h5"
 with h5py.File(OUTPUT_FILE, "r") as f:
     input_data = f["inputs"][:]
     output_data = f["outputs"][:]
+    print(f["inputs"][0])
+    print(f["outputs"][0])
     if "norm_params" in f:
         norm_params = f["norm_params"][:]
         print(

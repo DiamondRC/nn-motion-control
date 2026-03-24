@@ -37,8 +37,9 @@ PATIENCE = 200
 MIN_DELTA = 1e-4
 LEARNING_RATE = 3e-4
 ACCUMULATION_STEPS = 1  # Set >1 to simulate larger batch sizes on limited hardware
+MODEL_NAME = "MCP"
 MODEL_SAVE_PATH = (
-    "src/deltabot_nn_controller/model_zoo/models/model_states/best_model.pth"
+    f"src/deltabot_nn_controller/model_zoo/models/model_states/{MODEL_NAME}.pth"
 )
 SEED = 42
 INPUT_SIZE = 16  # controls dummy test size
@@ -127,6 +128,7 @@ trainer = Trainer(
     learning_rate=LEARNING_RATE,
     patience=PATIENCE,
     min_delta=MIN_DELTA,
+    model_name=MODEL_NAME,
     save_path=MODEL_SAVE_PATH,
     logging=DO_VERBOSE_LOGGING,
     accumulation_steps=ACCUMULATION_STEPS,

@@ -74,3 +74,6 @@ lockfiles/
 data/
 *.pth
 logs/
+
+# temp
+actor_critic.py

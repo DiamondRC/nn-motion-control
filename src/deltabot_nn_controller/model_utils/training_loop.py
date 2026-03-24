@@ -44,6 +44,7 @@ class Trainer:
         learning_rate,
         min_delta,
         patience,
+        model_name,
         save_path,
         logging,
         accumulation_steps,
@@ -59,6 +60,7 @@ class Trainer:
         self.min_delta = min_delta
         self.optimizer = optimizer_class(self.model.parameters(), lr=self.learning_rate)
         self.patience = patience
+        self.model_name = model_name
         self.save_path = save_path
         self.logging = logging
         self.accumulation_steps = accumulation_steps
@@ -219,31 +221,68 @@ class Trainer:
         epochs_no_improve = 0
 
         for epoch in range(self.num_epochs):
-            train_loss = self._train_epoch()
-            val_loss = self._validate_epoch()
+            try:
+                train_loss = self._train_epoch()
+                val_loss = self._validate_epoch()
 
-            # Store losses for future plotting
-            self.train_losses.append(train_loss)
-            self.val_losses.append(val_loss)
+                # Store losses for future plotting
+                self.train_losses.append(train_loss)
+                self.val_losses.append(val_loss)
 
-            if epoch % 10 == 0 or epoch == self.num_epochs - 1:
-                logger.info(
-                    f"Epoch {epoch + 1}/{self.num_epochs}, "
-                    f"Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}"
-                )
+                if epoch % 10 == 0 or epoch == self.num_epochs - 1:
+                    logger.info(
+                        f"Epoch {epoch + 1}/{self.num_epochs}, "
+                        f"Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}"
+                    )
 
-            # Early stopping check
-            if val_loss < best_val_loss - self.min_delta:
-                best_val_loss = val_loss
-                epochs_no_improve = 0
+                # Early stopping check
+                if val_loss < best_val_loss - self.min_delta:
+                    best_val_loss = val_loss
+                    epochs_no_improve = 0
 
-                # Save best model state
-                torch.save(self.model.state_dict(), self.save_path)
-                self.stopped_early = epoch + 1
-            else:
-                epochs_no_improve += 1
+                    # Save best model state
+                    torch.save(self.model.state_dict(), self.save_path)
+                    self.stopped_early = epoch + 1
+                else:
+                    epochs_no_improve += 1
 
-            if epochs_no_improve >= self.patience:
-                logger.info(f"Early stopping triggered after {epoch + 1} epochs.")
-                logger.info(f"The best model was at epoch {self.stopped_early}.")
-                break
+                if epochs_no_improve >= self.patience:
+                    logger.info(f"Early stopping triggered after {epoch + 1} epochs.")
+                    logger.info(f"The best model was at epoch {self.stopped_early}.")
+                    break
+
+            except KeyboardInterrupt:
+                try:
+                    logger.info(f"User termined learning process after {epoch} epochs.")
+                    logger.info(f"Finishing epoch {epoch + 1}...")
+
+                    train_loss = self._train_epoch()
+                    val_loss = self._validate_epoch()
+
+                    # Store losses for future plotting
+                    self.train_losses.append(train_loss)
+                    self.val_losses.append(val_loss)
+
+                    # Early stopping check
+                    if val_loss < best_val_loss - self.min_delta:
+                        best_val_loss = val_loss
+                        epochs_no_improve = 0
+
+                        # Save best model state
+                        torch.save(self.model.state_dict(), self.save_path)
+                        self.stopped_early = epoch + 1
+                    else:
+                        epochs_no_improve += 1
+
+                    if epochs_no_improve >= self.patience:
+                        logger.info(
+                            f"Early stopping triggered after {epoch + 1} epochs."
+                        )
+                        logger.info(
+                            f"The best model was at epoch {self.stopped_early}."
+                        )
+                        break
+
+                    break
+                except RuntimeError:
+                    break
