@@ -4,40 +4,48 @@ import logging.config
 import logging.handlers
 
 
-def setup_logging(logging_path, timestamp):
-    """
-    We want logs to autogenerate with a unqiue name per run,
-    which is not possible to specify in the json config.
+class ModelLogger:
+    def __init__(self, logging_path, timestamp):
+        self.logging_path = logging_path
+        self.timestamp = timestamp
 
-    This is something of a hacky workaround. Create a new
-    file handler with hardcoded properties, such as the
-    dynamically assigned filename.
+        # Create a log
+        self.setup_logging()
 
-    TODO - might be able to achieve the same thing with
-    something like jinja?
-    """
+    def setup_logging(self):
+        """
+        We want logs to autogenerate with a unqiue name per run,
+        which is not possible to specify in the json config.
 
-    # Load existing config
-    with open("logging.json") as f:
-        config = json.load(f)
+        This is something of a hacky workaround. Create a new
+        file handler with hardcoded properties, such as the
+        dynamically assigned filename.
 
-    filename = f"{logging_path}/{timestamp}.log"
+        TODO - might be able to achieve the same thing with
+        something like jinja?
+        """
 
-    # Set properties of the logging json
-    file_handler = logging.handlers.RotatingFileHandler(
-        filename=filename,
-        maxBytes=10485760,
-        backupCount=2,
-    )
+        # Load existing config
+        with open("logging.json") as f:
+            config = json.load(f)
 
-    # Use the "standard" formatter from JSON config
-    # This is a bit hacky!
-    formatter = config["formatters"]["standard"]["format"]
-    file_handler.setFormatter(logging.Formatter(formatter))
-    file_handler.setLevel(logging.DEBUG)
+        filename = f"{self.logging_path}/{self.timestamp}.log"
 
-    logging.config.dictConfig(config)
+        # Set properties of the logging json
+        file_handler = logging.handlers.RotatingFileHandler(
+            filename=filename,
+            maxBytes=10485760,
+            backupCount=2,
+        )
 
-    # Append handler to root logger
-    root = logging.getLogger()
-    root.addHandler(file_handler)
+        # Use the "standard" formatter from JSON config
+        # This is a bit hacky!
+        formatter = config["formatters"]["standard"]["format"]
+        file_handler.setFormatter(logging.Formatter(formatter))
+        file_handler.setLevel(logging.DEBUG)
+
+        logging.config.dictConfig(config)
+
+        # Append handler to root logger
+        root = logging.getLogger()
+        root.addHandler(file_handler)

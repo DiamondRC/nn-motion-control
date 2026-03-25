@@ -291,6 +291,7 @@ class TestModel:
         logger.info(f"Avg RMSE: {self.avg_rmse:.4f}")
 
         # Return metric for each item
+        logger.info(f"{'-' * 62}")
         logger.info("Variable specific metrics:")
         logger.info(f"{'-' * 62}")
         for idx, axis in enumerate(axes):

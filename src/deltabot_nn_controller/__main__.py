@@ -1,31 +1,69 @@
 """Interface for ``python -m deltabot_nn_controller``."""
 
-from argparse import ArgumentParser
-from collections.abc import Sequence
+import os
 
-from model_zoo.json_manager import load_config
+import typer
 
 from . import __version__
+from .globals import NaturalOrderGroup
+from .model_utils.model_creation import CompleteRun
 
 __all__ = ["main"]
 
+cli = typer.Typer(cls=NaturalOrderGroup, pretty_exceptions_enable=False)
 
-def main(args: Sequence[str] | None = None) -> None:
-    """Argument parser for the CLI."""
-    parser = ArgumentParser()
-    parser.add_argument(
-        "json_path", help="The path to the json description of the model"
-    )
-    parser.add_argument(
-        "-v",
+
+def version_callback(value):
+    if value:
+        typer.echo(__version__)
+        raise typer.Exit()
+
+
+@cli.command()
+def model(
+    model_cfg_pth: str = typer.Argument(
+        default="src/deltabot_nn_controller/model_zoo/plant_mlp.json",
+        help="A relative path to the model run config json",
+        exists=True,
+        dir_okay=True,
+        file_okay=False,
+        autocompletion=lambda: [],  # forces autocompletion
+    ),
+) -> None:
+    """
+    Completely trains and tests a model config.
+    """
+    if not model_cfg_pth:
+        typer.echo("Error: A model config must be provided.", err=True)
+
+    os.system("clear")
+
+    # Train and Test model
+    CompleteRun(model_cfg_pth)
+
+
+@cli.command()
+def test() -> None:
+    print("hello world")
+
+
+@cli.callback()
+def main(
+    version: bool | None = typer.Option(
+        None,
         "--version",
-        action="version",
-        version=__version__,
-    )
-    args = parser.parse_args(args)
+        callback=version_callback,
+        is_eager=True,
+        help="Print the program version and exit.",
+    ),
+):
+    """
+    Model builder for Deltabot Neural Network configuration
+    """
 
-    load_config(args[0])
 
-
+# test with:
+#   uv pip install -e .
+#   deltabot-nn-controller --help
 if __name__ == "__main__":
-    main()
+    cli()

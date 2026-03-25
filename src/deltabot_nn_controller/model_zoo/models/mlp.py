@@ -1,4 +1,3 @@
-import json
 import logging
 
 import torch.nn as nn
@@ -97,11 +96,3 @@ class MLP(nn.Module):
             x = x.flatten(start_dim=1)  # [B, window_size*features]
         # if x.dim() == 2, already correct shape ([B, features]), return
         return self.network(x)
-
-
-# Load
-with open("src/deltabot_nn_controller/model_zoo/plant_mlp.json") as f:
-    # with open("src/deltabot_nn_controller/model_zoo/basic_mlp.json") as f:
-    config = json.load(f)
-    if len(config["activations"]) != len(config["hidden_layers"]):
-        raise ValueError("Length of activations must match length of hidden layers")
