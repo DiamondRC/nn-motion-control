@@ -6,7 +6,7 @@ import numpy as np
 import torch
 from torch import autocast
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger(os.path.basename(__file__))
 
 
 class TestModel:

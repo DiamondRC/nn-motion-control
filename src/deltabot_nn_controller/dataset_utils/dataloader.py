@@ -9,7 +9,7 @@ import torch
 import torch.multiprocessing as mp
 from torch.utils.data import DataLoader, Dataset, random_split
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger(os.path.basename(__file__))
 
 
 class PVT2DACDataset(Dataset):
@@ -36,8 +36,6 @@ class PVT2DACDataset(Dataset):
         # Persistant_workers seems to cause all sorts of I/O issues,
         # so disabled for now.
         do_persistent_workers=False,
-        data_key="inputs",
-        label_key="outputs",
     ):
         # Instantiate user-configurable options
         self.batch_size = batch_size
@@ -59,12 +57,23 @@ class PVT2DACDataset(Dataset):
 
         # Check if we can send to RAM, otherwise fallback to on-demand loading
         available_memory = psutil.virtual_memory().total / (1024**3)
+
         with h5py.File(h5_path, "r") as f:
+            data_key = "inputs"
+            target_key = "outputs"
+            input_label_key = "input_labels"
+            output_label_key = "output_labels"
+            norm_key = "norm_params"
+
+            # Grab labels
+            self.input_labels = f[input_label_key]
+            self.target_labels = f[output_label_key]
+
             # Check size of dataset in GB
-            dataset_size_gb = (f[data_key].nbytes + f[label_key].nbytes) / (1024**3)
+            dataset_size_gb = (f[data_key].nbytes + f[target_key].nbytes) / (1024**3)
 
             # Collect normalisation params
-            self.norm_params = np.array(f["norm_params"])
+            self.norm_params = np.array(f[norm_key])
             # .values.astype(
             #     np.float32
             # )
@@ -78,7 +87,7 @@ class PVT2DACDataset(Dataset):
             else:
                 # Load entire dataset into RAM for faster access during training
                 self.data = f[data_key][:]
-                self.labels = f[label_key][:]
+                self.labels = f[target_key][:]
 
                 # Since we've loaded everything to RAM,
                 # we don't need (persistent) workers or prefetching

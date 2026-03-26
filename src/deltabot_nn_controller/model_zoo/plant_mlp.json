@@ -6,7 +6,6 @@
     2048,
     1024,
     512,
-    128,
     256,
     512,
     1024
@@ -37,7 +36,7 @@
   "train_ratio": 0.8,
   "validation_ratio": 0.1,
   "batch_size": 8192,
-  "max_epochs": 2,
+  "max_epochs": 5000,
   "patience": 200,
   "min_delta": 1e-4,
   "learning_rate": 3e-4,

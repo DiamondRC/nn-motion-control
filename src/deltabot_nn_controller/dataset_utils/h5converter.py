@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 
 import h5py
 import numpy as np
@@ -9,93 +10,144 @@ os.system("clear")
 DATA_DIR = "./data/"
 OUTPUT_FILE = "./data/pvt_to_dac_training.h5"
 
-DO_PVT = True
-DO_SHIFTING = True
-DO_NORMALISE = True
-DO_DATA_ANALYSIS = False
 
+class CreateTrainingData:
+    def __init__(self, data_dir, out_dir):
+        self.data_dir = data_dir
+        self.out_dir = out_dir
+        self.all_data = []
+        self.in_norm_mean = []
+        self.in_norm_std = []
+        self.out_norm_mean = []
+        self.out_norm_std = []
 
-# -------------------------------
-# Helper Functions
-# -------------------------------
+        self.input_labels = [
+            "timestep",
+            "x_pos",
+            "x_vel",
+            "x_acc",
+            "x_jer",
+            "y_pos",
+            "y_vel",
+            "y_acc",
+            "y_jer",
+            "z_pos",
+            "z_vel",
+            "z_acc",
+            "z_jer",
+            "x_DAC_real",
+            "y_DAC_real",
+            "z_DAC_real",
+        ]
 
+        self.output_labels = [
+            "timestep_nxt",
+            "x_pos_nxt",
+            "x_vel_nxt",
+            "x_acc_nxt",
+            "x_jer_nxt",
+            "y_pos_nxt",
+            "y_vel_nxt",
+            "y_acc_nxt",
+            "y_jer_nxt",
+            "z_pos_nxt",
+            "z_vel_nxt",
+            "z_acc_nxt",
+            "z_jer_nxt",
+        ]
 
-def parse_all_files(data_dir):
-    all_data = []
-    for filename in os.listdir(data_dir):
-        if filename.endswith(".txt"):
-            filepath = os.path.join(data_dir, filename)
-            print(f"Processing {filename}...")
-            # Read line-by-line, skip header if any, parse floats
-            df = pd.read_csv(
-                filepath,
-                sep=r"\s+",
-                header=None,
-                names=[
-                    "timestep",
-                    "x_input",
-                    "x_input_real",
-                    "y_input",
-                    "y_input_real",
-                    "z_input",
-                    "z_input_real",
-                    "x_pos",
-                    "y_pos",
-                    "z_pos",
-                ],
-            )
+        self.parse_all_files()
+        self.concat_files()
+        self.do_normalisation()
+        self.save_all()
 
-            # Discard verification data
-            df = df[
-                [
-                    "timestep",
-                    "x_input_real",
-                    "y_input_real",
-                    "z_input_real",
-                    "x_pos",
-                    "y_pos",
-                    "z_pos",
+    def parse_all_files(self):
+        """
+        Transforms data in txt files into PVTAJ data
+        for later neural network training.
+
+        Want x_DAC_i+1, x_pos_i -> x_pos_i+1
+        """
+
+        for filename in os.listdir(self.data_dir):
+            if filename.endswith(".txt"):
+                filepath = os.path.join(self.data_dir, filename)
+                print(f"Processing {filename}...")
+
+                # Read line-by-line, skip header if any, parse floats
+                df = pd.read_csv(
+                    filepath,
+                    sep=r"\s+",
+                    header=None,
+                    names=[
+                        "timestep",
+                        "x_input",
+                        "x_DAC_real",
+                        "y_input",
+                        "y_DAC_real",
+                        "z_input",
+                        "z_DAC_real",
+                        "x_pos",
+                        "y_pos",
+                        "z_pos",
+                    ],
+                )
+
+                # Discard verification data
+                df = df[
+                    [
+                        "timestep",
+                        "x_DAC_real",
+                        "y_DAC_real",
+                        "z_DAC_real",
+                        "x_pos",
+                        "y_pos",
+                        "z_pos",
+                    ]
                 ]
-            ]
 
-            if DO_SHIFTING:
-                # Shift positions to start at (0,0,0)
+                # Adjust positions to centre at (0,0,0)
                 df["x_pos"] -= np.mean(df["x_pos"])
                 df["y_pos"] -= np.mean(df["y_pos"])
                 df["z_pos"] -= np.mean(df["z_pos"])
 
-            if DO_DATA_ANALYSIS:
-                print(df["x_pos"][:10])
-                print(df["x_pos"].iloc[0])
+                # Shift the DAC values down to get the corresponding
+                # demand to position. We record DAC demand and current
+                # position simultaneously, so we need to shift the DACs
+                # to match the position outcome.
 
-                print(f"Raw:     {df['x_pos'][0]}")
-                print(f"Float32: {np.float32(df['x_pos'][0])}")
-                recovered = np.float64(np.float32(df["x_pos"][0]))
-                print(
-                    f"Error:   {abs(recovered - df['x_pos'][0]):.2e} mm = "
-                    f"{abs(recovered - df['x_pos'][0]) * 1e9:.1f} nm"
-                )
+                # Shift the DACs instead of position to keep extra position
+                # data which we can discard later when we do our deriviates.
+                df["x_DAC_real"] = df["x_DAC_real"].shift(1)
+                df["y_DAC_real"] = df["y_DAC_real"].shift(1)
+                df["z_DAC_real"] = df["z_DAC_real"].shift(1)
 
-                print(np.max(df["x_pos"]), np.min(df["x_pos"]))
+                # Clean up after shifting
+                df = df.dropna()
 
-            if DO_PVT:
-                # Catch div by zero
+                # Create dt and catch 0 divisions
                 dt = np.diff(df["timestep"])
                 dt_safe = np.clip(dt, 1e-9, None)
 
+                # Create relative timesteps, acting as effectively indices
+                df["timestep"] = (
+                    df["timestep"].astype(np.int64)
+                    - df["timestep"].astype(np.int64).iloc[0]
+                )
+
                 # Velocities
                 positions = np.stack([df["x_pos"], df["y_pos"], df["z_pos"]])
-                velocities_unpadded = np.diff(positions, axis=1) / dt_safe  # (3, n-1)
+                velocities_unpadded = np.diff(positions, axis=1) / dt_safe
 
                 # Accelerations from unpadded velocities
                 accelerations_unpadded = (
                     np.diff(velocities_unpadded, axis=1) / dt_safe[:-1]
-                )  # (3, n-2)
+                )
 
                 # Jerk from acceleration
                 jerks_unpadded = np.diff(accelerations_unpadded, axis=1) / dt_safe[:-2]
 
-                # Pad all
+                # Pad to reallign data
                 velocities_padded = np.pad(
                     velocities_unpadded,
                     ((0, 0), (1, 0)),
@@ -123,91 +175,36 @@ def parse_all_files(data_dir):
                 df["y_jer"] = jerks_padded[1]
                 df["z_jer"] = jerks_padded[2]
 
-                # collect next state
-                df["tstep_nxt"] = df["timestep"].shift(1)
-                df["x_pos_nxt"] = df["x_pos"].shift(1)
-                df["y_pos_nxt"] = df["y_pos"].shift(1)
-                df["z_pos_nxt"] = df["z_pos"].shift(1)
-                df["x_vel_nxt"] = df["x_vel"].shift(1)
-                df["y_vel_nxt"] = df["y_vel"].shift(1)
-                df["z_vel_nxt"] = df["z_vel"].shift(1)
-                df["x_acc_nxt"] = df["x_acc"].shift(1)
-                df["y_acc_nxt"] = df["y_acc"].shift(1)
-                df["z_acc_nxt"] = df["z_acc"].shift(1)
-                df["x_jer_nxt"] = df["x_jer"].shift(1)
-                df["y_jer_nxt"] = df["y_jer"].shift(1)
-                df["z_jer_nxt"] = df["z_jer"].shift(1)
-
-                # # Shift the DAC values
-                # df["x_input_real"] = df["x_input_real"].shift(1)
-                # df["y_input_real"] = df["y_input_real"].shift(1)
-                # df["z_input_real"] = df["z_input_real"].shift(1)
-
+                # Drop all rows with nan values
                 df = df.dropna()
 
-                # Create dataset of curr_state, DAC -> next_state
-                df = df[
-                    [
-                        "timestep",
-                        "x_pos",
-                        "x_vel",
-                        "x_acc",
-                        "x_jer",
-                        "y_pos",
-                        "y_vel",
-                        "y_acc",
-                        "y_jer",
-                        "z_pos",
-                        "z_vel",
-                        "z_acc",
-                        "z_jer",
-                        "x_input_real",
-                        "y_input_real",
-                        "z_input_real",
-                        "tstep_nxt",
-                        "x_pos_nxt",
-                        "y_pos_nxt",
-                        "z_pos_nxt",
-                        "x_vel_nxt",
-                        "y_vel_nxt",
-                        "z_vel_nxt",
-                        "x_acc_nxt",
-                        "y_acc_nxt",
-                        "z_acc_nxt",
-                        "x_jer_nxt",
-                        "y_jer_nxt",
-                        "z_jer_nxt",
-                    ]
-                ]
+                # Now shift states to create the i+1 next states
+                # Should have x_DAC_i+1, x_pos_i -> x_pos_i+1, which is
+                # what we want and is less lossy than x_DAC_i, x_pos_i+1 -> x_pos_i+2
+                for out_label in self.output_labels:
+                    base_label = out_label.replace("_nxt", "")
+                    if base_label in df.columns:
+                        df[out_label] = df[base_label].shift(-1)
 
-            all_data.append(df)
+                # Final shifting cleanup
+                df = df.dropna()
 
-    return all_data
+                # Return data
+                self.all_data.append(df)
 
+        print("\nFinished processing individual files.")
 
-def collect_files(files):
-    # Concatenate all
-    files = pd.concat(files, ignore_index=True)
-    return files
+    def concat_files(self):
+        self.all_data = pd.concat(self.all_data, ignore_index=True)
+        print("\nFinished combining files.")
 
+    def do_normalisation(self):
+        """
+        Normalises all data except timestep information.
+        Stores the normalisation params for later data recovery.
+        """
 
-# -------------------------------
-# Main Logic
-# -------------------------------
-
-
-# Handle individual file processing
-all_data = parse_all_files(DATA_DIR)
-
-# Create one dataset
-all_data = collect_files(all_data)
-
-# Split into input and output data and write to HDF5
-with h5py.File(OUTPUT_FILE, "w") as f:
-    # Cast everything as float32 to match training format
-    if DO_NORMALISE:
-        # Normalise interferometer data
-        def normalise_column(col, label):
+        def _normalise_column(col, label):
             # Keep mean/std as float64 for accurate denormalisation later
             col_f64 = col.astype(np.float64)
             input_mean = col_f64.mean()
@@ -225,257 +222,59 @@ with h5py.File(OUTPUT_FILE, "w") as f:
 
             return col_norm, input_mean, input_std
 
-        # Normalise each PVT axis and store the mean/std for later denormalisation
-        all_data["timestep"], t_mean, t_std = normalise_column(
-            all_data["timestep"], "timestep"
-        )
-        all_data["x_pos"], x_pos_mean, x_pos_std = normalise_column(
-            all_data["x_pos"], "x_pos"
-        )
-        all_data["y_pos"], y_pos_mean, y_pos_std = normalise_column(
-            all_data["y_pos"], "y_pos"
-        )
-        all_data["z_pos"], z_pos_mean, z_pos_std = normalise_column(
-            all_data["z_pos"], "z_pos"
-        )
+        # Normalise all the input data
+        print(f"np.shape(self.all_data): {np.shape(self.all_data)}")
+        for in_label in self.input_labels[1:]:
+            col_norm, mean, std = _normalise_column(self.all_data[in_label], in_label)
+            self.all_data[in_label] = col_norm
+            self.in_norm_mean.append(mean)
+            self.in_norm_std.append(std)
 
-        # Next states
-        all_data["tstep_nxt"], t_nxt_mean, t_nxt_std = normalise_column(
-            all_data["tstep_nxt"], "tstep_nxt"
-        )
-        all_data["x_pos_nxt"], x_pos_nxt_mean, x_pos_nxt_std = normalise_column(
-            all_data["x_pos_nxt"], "x_pos_nxt"
-        )
-        all_data["y_pos_nxt"], y_pos_nxt_mean, y_pos_nxt_std = normalise_column(
-            all_data["y_pos_nxt"], "y_pos_nxt"
-        )
-        all_data["z_pos_nxt"], z_pos_nxt_mean, z_pos_nxt_std = normalise_column(
-            all_data["z_pos_nxt"], "z_pos_nxt"
-        )
+        # Normalise all the output data
+        for out_label in self.output_labels[1:]:
+            col_norm, mean, std = _normalise_column(self.all_data[out_label], out_label)
+            self.all_data[out_label] = col_norm
+            self.out_norm_mean.append(mean)
+            self.out_norm_std.append(std)
 
-        # Normalise each DAC axis and store the mean/std for later denormalisation
-        all_data["x_input_real"], x_dac_mean, x_dac_std = normalise_column(
-            all_data["x_input_real"], "x_input_real"
-        )
-        all_data["y_input_real"], y_dac_mean, y_dac_std = normalise_column(
-            all_data["y_input_real"], "y_input_real"
-        )
-        all_data["z_input_real"], z_dac_mean, z_dac_std = normalise_column(
-            all_data["z_input_real"], "z_input_real"
-        )
+    def save_all(self):
+        """
+        Saves all the data, including any normalisation information.
+        """
+        print("\nDisplaying data for inspection.")
+        self.input_data = self.all_data[self.input_labels].to_numpy()
+        self.output_data = self.all_data[self.output_labels].to_numpy()
 
-        if DO_PVT:
-            # Normalise velocity and acceleration values, store results
-            all_data["x_vel"], x_vel_mean, x_vel_std = normalise_column(
-                all_data["x_vel"], "x_vel"
-            )
-            all_data["x_acc"], x_acc_mean, x_acc_std = normalise_column(
-                all_data["x_acc"], "x_acc"
-            )
-            all_data["x_jer"], x_jer_mean, x_jer_std = normalise_column(
-                all_data["x_jer"], "x_jer"
-            )
-            all_data["y_vel"], y_vel_mean, y_vel_std = normalise_column(
-                all_data["y_vel"], "y_vel"
-            )
-            all_data["y_acc"], y_acc_mean, y_acc_std = normalise_column(
-                all_data["y_acc"], "y_acc"
-            )
-            all_data["y_jer"], y_jer_mean, y_jer_std = normalise_column(
-                all_data["y_jer"], "y_jer"
-            )
-            all_data["z_vel"], z_vel_mean, z_vel_std = normalise_column(
-                all_data["z_vel"], "z_vel"
-            )
-            all_data["z_acc"], z_acc_mean, z_acc_std = normalise_column(
-                all_data["z_acc"], "z_acc"
-            )
-            all_data["z_jer"], z_jer_mean, z_jer_std = normalise_column(
-                all_data["z_jer"], "z_jer"
-            )
+        print(f"\nInput Data:\n{self.input_data[:][:4]}")
+        print(f"\nOutput Data\n{self.output_data[:][:4]}")
 
-            # next states
-            all_data["x_vel_nxt"], x_vel_nxt_mean, x_vel_nxt_std = normalise_column(
-                all_data["x_vel_nxt"], "x_vel_nxt"
-            )
-            all_data["y_vel_nxt"], y_vel_nxt_mean, y_vel_nxt_std = normalise_column(
-                all_data["y_vel_nxt"], "y_vel_nxt"
-            )
-            all_data["z_vel_nxt"], z_vel_nxt_mean, z_vel_nxt_std = normalise_column(
-                all_data["z_vel_nxt"], "z_vel_nxt"
-            )
-            all_data["x_acc_nxt"], x_acc_nxt_mean, x_acc_nxt_std = normalise_column(
-                all_data["x_acc_nxt"], "x_acc_nxt"
-            )
-            all_data["y_acc_nxt"], y_acc_nxt_mean, y_acc_nxt_std = normalise_column(
-                all_data["y_acc_nxt"], "y_acc_nxt"
-            )
-            all_data["z_acc_nxt"], z_acc_nxt_mean, z_acc_nxt_std = normalise_column(
-                all_data["z_acc_nxt"], "z_acc_nxt"
-            )
-            all_data["x_jer_nxt"], x_jer_nxt_mean, x_jer_nxt_std = normalise_column(
-                all_data["x_jer_nxt"], "x_jer_nxt"
-            )
-            all_data["y_jer_nxt"], y_jer_nxt_mean, y_jer_nxt_std = normalise_column(
-                all_data["y_jer_nxt"], "y_jer_nxt"
-            )
-            all_data["z_jer_nxt"], z_jer_nxt_mean, z_jer_nxt_std = normalise_column(
-                all_data["z_jer_nxt"], "z_jer_nxt"
-            )
+        print("\nSaving all data.")
+        try:
+            with h5py.File(self.out_dir, "w") as f:
+                f.create_dataset("inputs", data=self.input_data)
+                f.create_dataset("outputs", data=self.output_data)
+                f.create_dataset(
+                    "input_norm_params", data=[self.in_norm_mean, self.in_norm_std]
+                )
+                f.create_dataset(
+                    "output_norm_params", data=[self.out_norm_mean, self.out_norm_std]
+                )
+        except BlockingIOError:
+            print("h5 file blocked, attempting workaround...")
+            Path(self.out_dir).unlink()
+            with h5py.File(self.out_dir, "w") as f:
+                f.create_dataset("inputs", data=self.input_data)
+                f.create_dataset("outputs", data=self.output_data)
+                f.create_dataset(
+                    "input_norm_params", data=[self.in_norm_mean, self.in_norm_std]
+                )
+                f.create_dataset(
+                    "output_norm_params", data=[self.out_norm_mean, self.out_norm_std]
+                )
+                f.create_dataset("input_labels", data=self.input_labels)
+                f.create_dataset("target_labels", data=self.output_labels)
+        finally:
+            print("Data saved successfully.")
 
-        # Gather denormalisation parameters into one array for later use in inference
-        norm_params = np.array(
-            [
-                # main
-                t_mean,
-                t_std,
-                x_pos_mean,
-                x_pos_std,
-                x_vel_mean,
-                x_vel_std,
-                x_acc_mean,
-                x_acc_std,
-                x_jer_mean,
-                x_jer_std,
-                y_pos_mean,
-                y_pos_std,
-                y_vel_mean,
-                y_vel_std,
-                y_acc_mean,
-                y_acc_std,
-                y_jer_mean,
-                y_jer_std,
-                z_pos_mean,
-                z_pos_std,
-                z_vel_mean,
-                z_vel_std,
-                z_acc_mean,
-                z_acc_std,
-                z_jer_mean,
-                z_jer_std,
-                # dac
-                x_dac_mean,
-                x_dac_std,
-                y_dac_mean,
-                y_dac_std,
-                z_dac_mean,
-                z_dac_std,
-                # next states
-                x_pos_nxt_mean,
-                x_pos_nxt_std,
-                x_vel_nxt_mean,
-                x_vel_nxt_std,
-                x_acc_nxt_mean,
-                x_acc_nxt_std,
-                x_jer_nxt_mean,
-                x_jer_nxt_std,
-                y_pos_nxt_mean,
-                y_pos_nxt_std,
-                y_vel_nxt_mean,
-                y_vel_nxt_std,
-                y_acc_nxt_mean,
-                y_acc_nxt_std,
-                y_jer_nxt_mean,
-                y_jer_nxt_std,
-                z_pos_nxt_mean,
-                z_pos_nxt_std,
-                z_vel_nxt_mean,
-                z_vel_nxt_std,
-                z_acc_nxt_mean,
-                z_acc_nxt_std,
-                z_jer_nxt_mean,
-                z_jer_nxt_std,
-                t_nxt_mean,
-                t_nxt_std,
-            ]
-        )
 
-        print("\nWriting PVT dataset with normalisation params...")
-        input_data = all_data[
-            [
-                "timestep",
-                "x_pos",
-                "x_vel",
-                "x_acc",
-                "x_jer",
-                "y_pos",
-                "y_vel",
-                "y_acc",
-                "y_jer",
-                "z_pos",
-                "z_vel",
-                "z_acc",
-                "z_jer",
-                "x_input_real",
-                "y_input_real",
-                "z_input_real",
-            ]
-        ].values
-        output_data = all_data[
-            [
-                "tstep_nxt",
-                "x_pos_nxt",
-                "x_vel_nxt",
-                "x_acc_nxt",
-                "x_jer_nxt",
-                "y_pos_nxt",
-                "y_vel_nxt",
-                "y_acc_nxt",
-                "y_jer_nxt",
-                "z_pos_nxt",
-                "z_vel_nxt",
-                "z_acc_nxt",
-                "z_jer_nxt",
-            ]
-        ].values
-
-    else:
-        input_data = all_data[
-            "timestep",
-            "x_pos",
-            "x_vel",
-            "x_acc",
-            "x_jer",
-            "y_pos",
-            "y_vel",
-            "y_acc",
-            "y_jer",
-            "z_pos",
-            "z_vel",
-            "z_acc",
-            "z_jer",
-        ].values.astype(np.float32)
-
-        output_data = all_data[
-            ["x_input_real", "y_input_real", "z_input_real"]
-        ].values.astype(np.float32)
-
-    # Create input and output datasets
-    f.create_dataset(
-        "inputs",
-        data=input_data,
-    )
-
-    f.create_dataset(
-        "outputs",
-        data=output_data,
-    )
-
-    if DO_NORMALISE:
-        f.create_dataset(
-            "norm_params",
-            data=norm_params,
-        )
-
-if DO_NORMALISE:
-    print(
-        f"Converted to {OUTPUT_FILE}: inputs {input_data.shape}, "
-        f"outputs {output_data.shape}, norm_params {len(norm_params)}"
-    )
-    print(output_data[0][:5], output_data[1][:5], output_data[2][:5])
-
-else:
-    print(
-        f"Converted to {OUTPUT_FILE}: "
-        f"inputs {input_data.shape}, outputs {output_data.shape}"
-    )
+CreateTrainingData(DATA_DIR, OUTPUT_FILE)

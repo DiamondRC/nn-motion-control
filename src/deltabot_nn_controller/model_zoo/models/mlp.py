@@ -1,8 +1,9 @@
 import logging
+import os
 
 import torch.nn as nn
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger(os.path.basename(__file__))
 
 
 class MLP(nn.Module):

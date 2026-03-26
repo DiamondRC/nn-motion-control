@@ -1,9 +1,10 @@
 import logging
+import os
 
 import torch
 from torch import autocast
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger(os.path.basename(os.path.basename(__file__)))
 
 
 class Trainer:

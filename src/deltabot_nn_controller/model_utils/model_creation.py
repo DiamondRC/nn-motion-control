@@ -1,4 +1,5 @@
 import logging
+import os
 import time
 from datetime import datetime
 
@@ -53,7 +54,7 @@ class CompleteRun:
 
         # Begin logging
         ModelLogger(self.m.logging_dir, self.timestamp)
-        self.logger = logging.getLogger(__name__)
+        self.logger = logging.getLogger(os.path.basename(__file__))
 
     def _cuda_profiling(self):
         if self.m.do_verb_log:
