@@ -174,7 +174,8 @@ class CompleteRun:
     def _test_model(self):
         # Grab training info
         train_losses, val_losses, early_stop_epoch = self.trainer.get_training_info()
-        norm_consts = self.dataset.get_normalisation_params()
+        in_norm_consts, out_norm_consts = self.dataset.get_normalisation_params()
+        _, target_labels = self.dataset.get_data_labels()
 
         self.tester = TestModel(
             model=self.model,
@@ -183,7 +184,9 @@ class CompleteRun:
             validation_losses=val_losses,
             criterion_class=MSELoss,  # TODO - make this configurable
             early_stop_epoch=early_stop_epoch,
-            normalisation_consts=norm_consts,
+            in_norm_consts=in_norm_consts,
+            tar_norm_consts=out_norm_consts,
+            data_labels=target_labels,
             device=self.device,
             save_path=self.m.m_save_dir,
             plot_path=self.m.logging_dir,

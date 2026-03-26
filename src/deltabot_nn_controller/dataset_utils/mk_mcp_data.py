@@ -224,18 +224,30 @@ class CreateTrainingData:
 
         # Normalise all the input data
         print(f"np.shape(self.all_data): {np.shape(self.all_data)}")
-        for in_label in self.input_labels[1:]:
-            col_norm, mean, std = _normalise_column(self.all_data[in_label], in_label)
-            self.all_data[in_label] = col_norm
-            self.in_norm_mean.append(mean)
-            self.in_norm_std.append(std)
+        for in_label in self.input_labels:
+            if not in_label == "timestep":
+                col_norm, mean, std = _normalise_column(
+                    self.all_data[in_label], in_label
+                )
+                self.all_data[in_label] = col_norm
+                self.in_norm_mean.append(mean)
+                self.in_norm_std.append(std)
+            else:
+                self.in_norm_mean.append(1)
+                self.in_norm_std.append(1)
 
         # Normalise all the output data
-        for out_label in self.output_labels[1:]:
-            col_norm, mean, std = _normalise_column(self.all_data[out_label], out_label)
-            self.all_data[out_label] = col_norm
-            self.out_norm_mean.append(mean)
-            self.out_norm_std.append(std)
+        for out_label in self.output_labels:
+            if not out_label == "timestep_nxt":
+                col_norm, mean, std = _normalise_column(
+                    self.all_data[out_label], out_label
+                )
+                self.all_data[out_label] = col_norm
+                self.out_norm_mean.append(mean)
+                self.out_norm_std.append(std)
+            else:
+                self.out_norm_mean.append(1)
+                self.out_norm_std.append(1)
 
     def save_all(self):
         """
@@ -249,31 +261,26 @@ class CreateTrainingData:
         print(f"\nOutput Data\n{self.output_data[:][:4]}")
 
         print("\nSaving all data.")
+
+        # Delete file to prevent blockingIO
         try:
-            with h5py.File(self.out_dir, "w") as f:
-                f.create_dataset("inputs", data=self.input_data)
-                f.create_dataset("outputs", data=self.output_data)
-                f.create_dataset(
-                    "input_norm_params", data=[self.in_norm_mean, self.in_norm_std]
-                )
-                f.create_dataset(
-                    "output_norm_params", data=[self.out_norm_mean, self.out_norm_std]
-                )
-        except BlockingIOError:
-            print("h5 file blocked, attempting workaround...")
             Path(self.out_dir).unlink()
-            with h5py.File(self.out_dir, "w") as f:
-                f.create_dataset("inputs", data=self.input_data)
-                f.create_dataset("outputs", data=self.output_data)
-                f.create_dataset(
-                    "input_norm_params", data=[self.in_norm_mean, self.in_norm_std]
-                )
-                f.create_dataset(
-                    "output_norm_params", data=[self.out_norm_mean, self.out_norm_std]
-                )
-                f.create_dataset("input_labels", data=self.input_labels)
-                f.create_dataset("target_labels", data=self.output_labels)
-        finally:
+        except FileNotFoundError:
+            pass
+
+        # Do writing
+        with h5py.File(self.out_dir, "w") as f:
+            f.create_dataset("inputs", data=self.input_data)
+            f.create_dataset("targets", data=self.output_data)
+            f.create_dataset(
+                "input_norm_params", data=[self.in_norm_mean, self.in_norm_std]
+            )
+            f.create_dataset(
+                "target_norm_params", data=[self.out_norm_mean, self.out_norm_std]
+            )
+            f.create_dataset("input_labels", data=self.input_labels)
+            f.create_dataset("target_labels", data=self.output_labels)
+
             print("Data saved successfully.")
 
 

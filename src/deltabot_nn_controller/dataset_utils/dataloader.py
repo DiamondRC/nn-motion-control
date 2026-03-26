@@ -58,25 +58,24 @@ class PVT2DACDataset(Dataset):
         # Check if we can send to RAM, otherwise fallback to on-demand loading
         available_memory = psutil.virtual_memory().total / (1024**3)
 
-        with h5py.File(h5_path, "r") as f:
-            data_key = "inputs"
-            target_key = "outputs"
-            input_label_key = "input_labels"
-            output_label_key = "output_labels"
-            norm_key = "norm_params"
+        data_key = "inputs"
+        target_key = "targets"
+        input_label_key = "input_labels"
+        output_label_key = "target_labels"
+        input_norm_key = "input_norm_params"
+        output_norm_key = "target_norm_params"
 
+        with h5py.File(h5_path, "r") as f:
             # Grab labels
-            self.input_labels = f[input_label_key]
-            self.target_labels = f[output_label_key]
+            self.input_labels = np.array(f[input_label_key])
+            self.target_labels = np.array(f[output_label_key])
 
             # Check size of dataset in GB
             dataset_size_gb = (f[data_key].nbytes + f[target_key].nbytes) / (1024**3)
 
             # Collect normalisation params
-            self.norm_params = np.array(f[norm_key])
-            # .values.astype(
-            #     np.float32
-            # )
+            self.input_norm_params = np.array(f[input_norm_key])
+            self.output_norm_params = np.array(f[output_norm_key])
 
             # Compare sizes with a little headroom (+20% max system)
             if available_memory < dataset_size_gb + (available_memory * 0.2):
@@ -87,7 +86,7 @@ class PVT2DACDataset(Dataset):
             else:
                 # Load entire dataset into RAM for faster access during training
                 self.data = f[data_key][:]
-                self.labels = f[target_key][:]
+                self.targets = f[target_key][:]
 
                 # Since we've loaded everything to RAM,
                 # we don't need (persistent) workers or prefetching
@@ -100,7 +99,7 @@ class PVT2DACDataset(Dataset):
 
         # Convert to PyTorch tensors
         self.data = torch.from_numpy(self.data).float()
-        self.labels = torch.from_numpy(self.labels).float()
+        self.targets = torch.from_numpy(self.targets).float()
 
         # Create dataloaders
         self.train_loader, self.val_loader, self.test_loader = (
@@ -120,12 +119,12 @@ class PVT2DACDataset(Dataset):
             window_data = self.data[idx : idx + self.window_size]
 
             # Use target at the end of the window
-            label = self.labels[idx + self.window_size - 1]
+            label = self.targets[idx + self.window_size - 1]
             # print(window_data.shape, label.shape)
             return window_data, label
         else:
             # If no windowing, return single sample
-            return self.data[idx], self.labels[idx]
+            return self.data[idx], self.targets[idx]
 
     def _auto_tune_dataloader(self):
         """
@@ -198,7 +197,7 @@ class PVT2DACDataset(Dataset):
         if self.num_workers > 0:
             mp.set_sharing_strategy("file_system")
 
-        # Instanticate DataLoaders
+        # Instantiate DataLoaders
         train_loader = DataLoader(
             train_dataset,
             batch_size=self.batch_size,
@@ -247,7 +246,16 @@ class PVT2DACDataset(Dataset):
         # Run garbage collection
         gc.collect()
 
-    def get_normalisation_params(self):
-        """ """
+    def get_data_labels(self):
+        """
+        Returns the labels of the input and target data.
+        """
 
-        return self.norm_params
+        return self.input_labels, self.target_labels
+
+    def get_normalisation_params(self):
+        """
+        Returns the normalisation params.
+        """
+
+        return self.input_norm_params, self.output_norm_params
