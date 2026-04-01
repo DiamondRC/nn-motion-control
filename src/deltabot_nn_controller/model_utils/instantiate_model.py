@@ -26,6 +26,7 @@ class RunConfiguration:
         """
         # Scaffolding
         self.model_name = self.model_config["model_name"]
+        self.network_type = self.model_config["network_type"]
         self.m_save_dir = f"{self.model_config['model_save_dir']}/{self.model_name}.pth"
         self.logging_dir = self.model_config["logging_dir"]
         self.seed = self.model_config["seed"]
@@ -44,13 +45,23 @@ class RunConfiguration:
         self.val_ratio = self.model_config["validation_ratio"]
 
         # Training
-        self.input_size = self.model_config["input_size"]
-        self.window_size = self.model_config["window_size"]
+        self.input_params = self.model_config["input_params"]
+        self.target_params = self.model_config["target_params"]
+        self.input_size = len(self.input_params)
+        self.target_size = len(self.target_params)
+        self.dropout = self.model_config.get("dropout", 0.0)
+        self.layer_norm = self.model_config.get("layer_norm", True)
+        self.hidden_layers = self.model_config["hidden_layers"]
+        self.activations = self.model_config.get(
+            "activations", ["ReLU"] * len(self.hidden_layers)
+        )
+        self.window_size = self.model_config.get("window_size", 1)
         self.batch_size = self.model_config["batch_size"]
         self.max_epochs = self.model_config["max_epochs"]
         self.patience = self.model_config["patience"]
         self.min_delta = self.model_config["min_delta"]
         self.lr_rate = self.model_config["learning_rate"]
+        self.dtype = self.model_config["training_dtype"]
 
         # Testing
         self.display_no = self.model_config["test_display_num"]

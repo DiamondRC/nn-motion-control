@@ -24,35 +24,39 @@ class MLP(nn.Module):
     # currently assumes all ReLU
     ACTIVATIONS = {"ReLU": nn.ReLU, "Tanh": nn.Tanh, "Sigmoid": nn.Sigmoid}
 
-    def __init__(self, logging, config):
+    def __init__(self, logging, model):
         # User params
         self.logging = logging
+        self.m = model
 
         # Model config
         super().__init__()
-        self.network_type = config["network_type"]
-        if self.network_type == "mlp":
-            self._build_mlp(config)
+        if self.m.network_type == "mlp":
+            self._build_mlp()
         else:
             raise ValueError(f"Unsupported network type: {self.network_type}")
         self.apply(self._init_weights)
 
     # Constructs the MLP based on the provided config
-    def _build_mlp(self, config):
-        output_size = config["output_size"]
-        hidden_layers = config["hidden_layers"]
-        activations = config.get("activations", ["ReLU"] * len(hidden_layers))
-        dropout = config.get("dropout", 0.0)
-        layer_norm = config.get("layer_norm", False)
+    def _build_mlp(self):
+        output_size = self.m.target_size
+        hidden_layers = self.m.hidden_layers
+        activations = self.m.activations
+        dropout = self.m.dropout
+        layer_norm = self.m.layer_norm
 
-        window_size = config.get("window_size", 1)
+        window_size = self.m.window_size
         # Flatten input if using windows
-        input_size = config["input_size"] * window_size
+        input_size = self.m.input_size * window_size
 
         if self.logging:
-            logger.debug(f"Building MLP with input size {input_size}")
-            logger.debug(f"LayerNorm enabled: {config.get('layer_norm', False)}")
-            logger.debug(f"Using Dropout: {config.get('dropout')}")
+            logger.debug("Building MLP...")
+            logger.debug(f"MLP Inputs: {self.m.input_params}")
+            logger.debug(f"MLP Outputs: {self.m.target_params}")
+            logger.debug(f"MLP Input size {input_size}")
+            logger.debug(f"MLP Output size {output_size}")
+            logger.debug(f"LayerNorm enabled: {layer_norm}")
+            logger.debug(f"Using Dropout: {dropout}")
 
         layers = []
         prev_size = input_size

@@ -83,6 +83,8 @@ class CompleteRun:
             seed=self.m.seed,
             logging=self.m.do_verb_log,
             window_size=self.m.window_size,
+            allowed_inputs=self.m.input_params,
+            allowed_targets=self.m.target_params,
         )
         self.tra_loader, self.val_loader, self.tst_loader = (
             self.dataset.train_loader,
@@ -92,7 +94,7 @@ class CompleteRun:
 
     def _create_model(self):
         # TODO - model selection
-        self.model = MLP(logging=self.m.do_verb_log, config=self.m.model_config)
+        self.model = MLP(logging=self.m.do_verb_log, model=self.m)
         self.model.to(self.device)
 
     def _run_trainer(self):
@@ -113,6 +115,7 @@ class CompleteRun:
             save_path=self.m.m_save_dir,
             logging=self.m.do_verb_log,
             accumulation_steps=self.m.accum_steps,
+            training_dtype=self.m.dtype,
         )
 
     def _dummy_test(self):
@@ -193,6 +196,7 @@ class CompleteRun:
             plot_name=self.timestamp,
             logging=self.m.do_verb_log,
             test_display_num=self.m.display_no,
+            training_dtype=self.m.dtype,
         )
 
         self.tester.test()

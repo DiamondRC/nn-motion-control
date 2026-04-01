@@ -1,7 +1,36 @@
 {
   "network_type": "mlp",
-  "input_size": 16,
-  "output_size": 13,
+  "input_params": [
+    "x_pos",
+    "x_vel",
+    "x_acc",
+    "x_jer",
+    "y_pos",
+    "y_vel",
+    "y_acc",
+    "y_jer",
+    "z_pos",
+    "z_vel",
+    "z_acc",
+    "z_jer",
+    "x_DAC_real",
+    "y_DAC_real",
+    "z_DAC_real"
+  ],
+  "target_params": [
+    "x_pos_nxt",
+    "x_vel_nxt",
+    "x_acc_nxt",
+    "x_jer_nxt",
+    "y_pos_nxt",
+    "y_vel_nxt",
+    "y_acc_nxt",
+    "y_jer_nxt",
+    "z_pos_nxt",
+    "z_vel_nxt",
+    "z_acc_nxt",
+    "z_jer_nxt"
+  ],
   "hidden_layers": [
     2048,
     1024,
@@ -40,5 +69,6 @@
   "patience": 200,
   "min_delta": 1e-4,
   "learning_rate": 3e-4,
-  "test_display_num": 3
+  "test_display_num": 3,
+  "training_dtype": "bfloat16"
 }

@@ -18,3 +18,7 @@
   "layer_norm": true,
   "window_size": 4
 }
+
+
+    "timestep",
+"timestep_nxt",

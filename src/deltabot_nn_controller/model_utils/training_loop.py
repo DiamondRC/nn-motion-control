@@ -49,6 +49,7 @@ class Trainer:
         save_path,
         logging,
         accumulation_steps,
+        training_dtype,
     ):
         self.model = model
         self.train_loader = train_loader
@@ -65,6 +66,7 @@ class Trainer:
         self.save_path = save_path
         self.logging = logging
         self.accumulation_steps = accumulation_steps
+        self.training_dtype = training_dtype
 
         self.train_losses = []
         self.val_losses = []
@@ -189,7 +191,7 @@ class Trainer:
                     labels.to(self.device, non_blocking=True),
                 )
                 # Check model against unseen data to monitor overfitting
-                with autocast(device_type=self.device):
+                with autocast(device_type=self.device, dtype=torch.bfloat16):
                     outputs = self.model(data)
                     loss = self.criterion(outputs, labels)
 

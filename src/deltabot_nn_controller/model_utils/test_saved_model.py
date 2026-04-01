@@ -27,6 +27,7 @@ class TestModel:
         device,
         logging,
         test_display_num,
+        training_dtype,
     ):
         # Instantiate user args
         self.model = model
@@ -43,6 +44,7 @@ class TestModel:
         self.plot_name = plot_name
         self.device = device
         self.test_display_num = test_display_num
+        self.training_dtype = training_dtype
 
     def _testing_loop(self):
         """
@@ -61,14 +63,14 @@ class TestModel:
                     data.to(self.device, non_blocking=True),
                     labels.to(self.device, non_blocking=True),
                 )
-                with autocast(device_type=self.device):
+                with autocast(device_type=self.device, dtype=torch.bfloat16):
                     outputs = self.model(data)
                     loss = self.criterion(outputs, labels)
                     total_loss += loss.item()
 
-                    # Collect predictions and targets for metrics
-                    all_predictions.extend(outputs.cpu().flatten().numpy())
-                    all_targets.extend(labels.cpu().flatten().numpy())
+                # Collect predictions and targets for metrics
+                all_predictions.extend(outputs.float().cpu().flatten().numpy())
+                all_targets.extend(labels.cpu().flatten().numpy())
 
         self.avg_loss = total_loss / len(self.test_loader)
 
