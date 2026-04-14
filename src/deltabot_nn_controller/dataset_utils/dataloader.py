@@ -14,47 +14,98 @@ logger = logging.getLogger(os.path.basename(__file__))
 
 
 @dataclass(frozen=True)
-class LoaderConfig:
-    batch_size: int
-    num_workers: int = 0
-    prefetch_factor: int | None = None
-    persistent_workers: bool = False
-    pin_memory: bool = True
-    shuffle_train: bool = True
-    seed: int = 42
-    enable_logging: bool = False
-
-
-@dataclass(frozen=True)
 class DatasetMetadata:
     input_labels: np.ndarray
     target_labels: np.ndarray
-    input_norm_params: np.ndarray
-    target_norm_params: np.ndarray
-    num_samples: int
-    num_input_features: int
-    num_target_features: int
+    input_denorm_params: dict[str, dict[str, float]]
+    target_denorm_params: dict[str, dict[str, float]]
+    loss_weights: torch.Tensor
 
 
-def load_metadata(h5_path: str) -> DatasetMetadata:
-    logger.debug("Gathering dataset metadata...")
-    with h5py.File(h5_path, "r") as f:
-        input_labels = np.array([x.decode("utf-8") for x in f["input_labels"]])
-        target_labels = np.array([x.decode("utf-8") for x in f["target_labels"]])
-        input_norm_params = np.array(f["input_norm_params"])
-        target_norm_params = np.array(f["target_norm_params"])
-        num_samples = int(f["inputs"].shape[0])
-        num_input_features = int(f["inputs"].shape[1])
-        num_target_features = int(f["targets"].shape[1])
+@dataclass(frozen=True)
+class AllDataInfo:
+    trn_loader: DataLoader
+    val_loader: DataLoader
+    tst_loader: DataLoader
+    node_info: DatasetMetadata
 
-    return DatasetMetadata(
-        input_labels=input_labels,
-        target_labels=target_labels,
-        input_norm_params=input_norm_params,
-        target_norm_params=target_norm_params,
-        num_samples=num_samples,
-        num_input_features=num_input_features,
-        num_target_features=num_target_features,
+
+def build_time_series_splits(
+    h5_path: str,
+    allowed_inputs: Sequence[str],
+    allowed_targets: Sequence[dict[str, float]],
+    window_size: int,
+    train_ratio: float,
+    val_ratio: float,
+    training_dtype: torch.dtype,
+    seed: int = 42,
+    load_into_ram: bool = False,
+    batch_size: int = 32,
+    num_workers: int = 0,
+    cpu_core_util: int = 50,
+    prefetch_factor: int | None = None,
+    persistent_workers: bool = False,
+    pin_memory: bool = True,
+    auto_tune_workers: bool = True,
+    enable_logging: bool = False,
+) -> AllDataInfo:
+    """
+    Create contiguous or random splits in loaded data.
+
+    Contiguous helps reduce leakage from overlapping windows.
+    """
+
+    split_mode: str = "contiguous" if window_size > 1 else "random"
+
+    if load_into_ram:
+        ensure_enough_ram(h5_path)
+
+    dataset = H5TimeSeriesDataset(
+        h5_path=h5_path,
+        allowed_inputs=allowed_inputs,
+        allowed_targets=allowed_targets,
+        window_size=window_size,
+        load_into_ram=load_into_ram,
+        dtype=training_dtype,
+    )
+
+    if auto_tune_workers:
+        num_workers, prefetch_factor, persistent_workers = setup_workers(
+            num_workers=num_workers,
+            cpu_core_util=cpu_core_util,
+            load_into_ram=load_into_ram,
+            enable_logging=enable_logging,
+        )
+
+    n = len(dataset)
+    if split_mode == "contiguous":
+        train_idx, val_idx, test_idx = split_indices_contiguous(
+            n, train_ratio, val_ratio
+        )
+    elif split_mode == "random":
+        train_idx, val_idx, test_idx = split_indices_random(
+            n, train_ratio, val_ratio, seed
+        )
+    else:
+        # Leaving incase of future split method
+        raise ValueError("split_mode must be 'contiguous' or 'random'")
+
+    return AllDataInfo(
+        *make_dataloaders(
+            dataset=dataset,
+            train_idx=train_idx,
+            val_idx=val_idx,
+            test_idx=test_idx,
+            batch_size=batch_size,
+            num_workers=num_workers,
+            prefetch_factor=prefetch_factor,
+            persistent_workers=persistent_workers,
+            pin_memory=pin_memory,
+            shuffle_train=(split_mode == "random"),
+            seed=seed,
+            enable_logging=enable_logging,
+        ),
+        node_info=dataset.meta,
     )
 
 
@@ -154,25 +205,12 @@ class H5TimeSeriesDataset(Dataset):
         self,
         h5_path: str,
         allowed_inputs: Sequence[str],
-        allowed_targets: Sequence[str],
+        allowed_targets: Sequence[dict[str, float]],
         window_size: int = 1,
         load_into_ram: bool = False,
-        dtype: torch.dtype = torch.float32,  # TODO - hardcoded
+        dtype: torch.dtype = torch.float32,
     ):
         super().__init__()
-
-        try:
-            if window_size < 1:
-                raise ValueError(f"{window_size=} must be >= 1")
-        except ValueError:
-            logger.exception(f"{window_size=} must be >= 1")
-
-        self.h5_path = h5_path
-        self.allowed_inputs = list(allowed_inputs)
-        self.allowed_targets = list(allowed_targets)
-        self.window_size = window_size
-        self.load_into_ram = load_into_ram
-        self.dtype = dtype
 
         self._file = None
         self._inputs = None
@@ -180,51 +218,73 @@ class H5TimeSeriesDataset(Dataset):
         self._input_idx = None
         self._target_idx = None
 
-        meta = load_metadata(h5_path)
-        self.input_labels = meta.input_labels
-        self.target_labels = meta.target_labels
-        self.input_norm_params = meta.input_norm_params
-        self.target_norm_params = meta.target_norm_params
+        self.window_size = window_size
+        self.h5_path = h5_path
+        self.dtype = dtype
 
-        self._input_idx = validate_labels(
-            self.allowed_inputs, self.input_labels, "input"
-        )
-        self._target_idx = validate_labels(
-            self.allowed_targets, self.target_labels, "target"
-        )
+        self.allowed_inputs = list(allowed_inputs)
+        self.allowed_targets = [list(d.keys())[0] for d in allowed_targets]
+        loss_weighting = [list(d.values())[0] for d in allowed_targets]
 
-        # Need to match input norm params with the label.
-        # TODO - idx matching not ideal, fragile
-        self.input_norm_mean = {}
-        self.input_norm_std = {}
-        self.target_norm_mean = {}
-        self.target_norm_std = {}
-
-        # Try to match idx of label with corresponding norm_params
-        for idx, item in enumerate(self.allowed_inputs):
-            self.input_norm_mean[item] = self.input_norm_params[0][idx]
-            self.input_norm_std[item] = self.input_norm_params[1][idx]
-
-        print(f"{self.input_norm_mean=}")
-
-        for idx, item in enumerate(self.allowed_targets):
-            self.target_norm_mean[item] = self.target_norm_params[0][idx]
-            self.target_norm_std[item] = self.target_norm_params[1][idx]
-
-        self._num_rows = meta.num_samples
+        self.meta = self._load_metadata(loss_weighting)
 
         try:
-            if self.window_size > self._num_rows:
+            if self.window_size > self.num_samples:
                 raise ValueError(
-                    f"{self.window_size=} cannot exceed number of r{self._num_rows=}"
+                    f"{self.window_size=} cannot exceed {self.num_samples=}"
                 )
         except ValueError:
-            logger.exception(
-                f"{self.window_size=} cannot exceed number of r{self._num_rows=}"
-            )
+            logger.exception(f"{self.window_size=} cannot exceed {self.num_samples=}")
 
-        if self.load_into_ram:
+        if load_into_ram:
             self._load_all_to_ram()
+
+    def _load_metadata(self, loss_weighting: list[float]) -> DatasetMetadata:
+        logger.debug("Gathering dataset metadata...")
+
+        with h5py.File(self.h5_path, "r") as f:
+            input_labels = np.array([x.decode("utf-8") for x in f["input_labels"]])
+            target_labels = np.array([x.decode("utf-8") for x in f["target_labels"]])
+            input_norm_params = np.array(f["input_norm_params"])
+            target_norm_params = np.array(f["target_norm_params"])
+
+            self.num_samples = int(f["inputs"].shape[0])
+
+        self._input_idx = validate_labels(self.allowed_inputs, input_labels, "input")
+        self._target_idx = validate_labels(
+            self.allowed_targets, target_labels, "target"
+        )
+
+        # Pack denorm params according to user selection
+        input_denorm_params = {
+            "mean": dict(zip(self.allowed_inputs, input_norm_params[0], strict=False)),
+            "std": dict(zip(self.allowed_inputs, input_norm_params[1], strict=False)),
+        }
+
+        target_denorm_params = {
+            "mean": dict(
+                zip(self.allowed_targets, target_norm_params[0], strict=False)
+            ),
+            "std": dict(zip(self.allowed_targets, target_norm_params[1], strict=False)),
+        }
+
+        # Create loss function weighting for each param
+        weighting_tensor = torch.tensor(loss_weighting)
+        loss_weights = torch.stack(
+            [
+                (1.0 / (target_denorm_params["std"][label] ** 2 + 1e-8))
+                * weighting_tensor
+                for label in self.allowed_targets
+            ]
+        )
+
+        return DatasetMetadata(
+            input_labels=input_labels,
+            target_labels=target_labels,
+            input_denorm_params=input_denorm_params,
+            target_denorm_params=target_denorm_params,
+            loss_weights=loss_weights,
+        )
 
     def _open_file(self):
         if self._file is None:
@@ -243,7 +303,7 @@ class H5TimeSeriesDataset(Dataset):
         """
         Accounts for windowing.
         """
-        return self._num_rows - self.window_size + 1
+        return self.num_samples - self.window_size + 1
 
     def __getitem__(self, idx: int):
         """
@@ -294,20 +354,6 @@ class H5TimeSeriesDataset(Dataset):
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-
-    def get_data_labels(self):
-        """
-        Returns the (reduced) input and target labels from the training file.
-        """
-
-        return self.allowed_inputs, self.allowed_targets
-
-    def get_normalisation_params(self):
-        """
-        Returns the norm params from the training file.
-        """
-
-        return self.input_norm_params, self.target_norm_params
 
 
 class SubsetDataset(Dataset):
@@ -365,7 +411,7 @@ def make_dataloaders(
     shuffle_train: bool = True,
     seed: int = 42,
     enable_logging: bool = False,
-):
+) -> tuple[DataLoader, DataLoader, DataLoader]:
     """
     Creates the training, validation and testing dataloaders.
     """
@@ -409,7 +455,7 @@ def make_dataloaders(
             f"pin_memory={common_kwargs['pin_memory']}"
         )
 
-    return dataset, train_loader, val_loader, test_loader
+    return train_loader, val_loader, test_loader
 
 
 def ensure_enough_ram(h5_path: str):
@@ -433,77 +479,3 @@ def ensure_enough_ram(h5_path: str):
         logger.exception(
             f"Not enough available RAM. {required:.2f=} GB, {available:.2f=} GB"
         )
-
-
-def build_time_series_splits(
-    h5_path: str,
-    allowed_inputs: Sequence[str],
-    allowed_targets: Sequence[str],
-    window_size: int,
-    train_ratio: float,
-    val_ratio: float,
-    seed: int = 42,
-    load_into_ram: bool = False,
-    batch_size: int = 32,
-    num_workers: int = 0,
-    cpu_core_util: int = 50,
-    prefetch_factor: int | None = None,
-    persistent_workers: bool = False,
-    pin_memory: bool = True,
-    auto_tune_workers: bool = True,
-    enable_logging: bool = False,
-):
-    """
-    Create contiguous or random splits in loaded data.
-
-    Contiguous helps reduce leakage from overlapping windows.
-    """
-
-    # TODO - hardcoded for now
-    split_mode: str = "contiguous" if window_size > 1 else "random"
-
-    if load_into_ram:
-        ensure_enough_ram(h5_path)
-
-    dataset = H5TimeSeriesDataset(
-        h5_path=h5_path,
-        allowed_inputs=allowed_inputs,
-        allowed_targets=allowed_targets,
-        window_size=window_size,
-        load_into_ram=load_into_ram,
-    )
-
-    if auto_tune_workers:
-        num_workers, prefetch_factor, persistent_workers = setup_workers(
-            num_workers=num_workers,
-            cpu_core_util=cpu_core_util,
-            load_into_ram=load_into_ram,
-            enable_logging=enable_logging,
-        )
-
-    n = len(dataset)
-    if split_mode == "contiguous":
-        train_idx, val_idx, test_idx = split_indices_contiguous(
-            n, train_ratio, val_ratio
-        )
-    elif split_mode == "random":
-        train_idx, val_idx, test_idx = split_indices_random(
-            n, train_ratio, val_ratio, seed
-        )
-    else:
-        raise ValueError("split_mode must be 'contiguous' or 'random'")
-
-    return make_dataloaders(
-        dataset=dataset,
-        train_idx=train_idx,
-        val_idx=val_idx,
-        test_idx=test_idx,
-        batch_size=batch_size,
-        num_workers=num_workers,
-        prefetch_factor=prefetch_factor,
-        persistent_workers=persistent_workers,
-        pin_memory=pin_memory,
-        shuffle_train=(split_mode == "random"),
-        seed=seed,
-        enable_logging=enable_logging,
-    )

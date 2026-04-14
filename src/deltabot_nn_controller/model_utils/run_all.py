@@ -23,6 +23,7 @@ class CompleteRun:
         # Begin logging process
         self._setup_run()
         self._cuda_profiling()
+        self.logger.info("Starting Run...")
 
         # Create dataloaders
         self._create_run_dataloaders()
@@ -70,32 +71,25 @@ class CompleteRun:
             self.device = "cpu"
 
     def _create_run_dataloaders(self):
-        self.dataset, self.tra_loader, self.val_loader, self.tst_loader = (
-            build_time_series_splits(
-                h5_path=self.m.datafile_dir,
-                allowed_inputs=self.m.input_params,
-                allowed_targets=self.m.target_params,
-                window_size=self.m.window_size,
-                train_ratio=self.m.train_ratio,
-                val_ratio=self.m.val_ratio,
-                seed=self.m.seed,
-                batch_size=self.m.batch_size,
-                num_workers=self.m.num_workers,
-                cpu_core_util=self.m.p_cpu_util,
-                prefetch_factor=self.m.prefetch_factor,
-                persistent_workers=False,
-                pin_memory=True,
-                auto_tune_workers=self.m.do_dataloader_auto_tune,
-                enable_logging=self.m.do_verb_log,
-                load_into_ram=True,
-            )
+        self.dloader = build_time_series_splits(
+            h5_path=self.m.datafile_dir,
+            allowed_inputs=self.m.input_params,
+            allowed_targets=self.m.target_params,
+            window_size=self.m.window_size,
+            train_ratio=self.m.train_ratio,
+            val_ratio=self.m.val_ratio,
+            seed=self.m.seed,
+            batch_size=self.m.batch_size,
+            num_workers=self.m.num_workers,
+            cpu_core_util=self.m.p_cpu_util,
+            prefetch_factor=self.m.prefetch_factor,
+            persistent_workers=False,
+            pin_memory=True,
+            auto_tune_workers=self.m.do_dataloader_auto_tune,
+            enable_logging=self.m.do_verb_log,
+            training_dtype=self.m.dtype,
+            load_into_ram=True,
         )
-
-        # self.tra_loader, self.val_loader, self.tst_loader = (
-        #     self.dataset.train_loader,
-        #     self.dataset.val_loader,
-        #     self.dataset.test_loader,
-        # )
 
     def _create_model(self):
         # TODO - model selection
@@ -106,17 +100,13 @@ class CompleteRun:
         # Instantiate trainer with model, dataloaders, and training hyperparams
         self.trainer = Trainer(
             model=self.model,
-            train_loader=self.tra_loader,
-            val_loader=self.val_loader,
+            train_loader=self.dloader.trn_loader,
+            val_loader=self.dloader.val_loader,
             device=self.device,
             scaler_class=self.m.grad_scaler,
             optimizer_class=self.m.optimiser,
             criterion_class=self.m.loss_function,
-            in_norm_consts=[self.dataset.input_norm_mean, self.dataset.input_norm_std],
-            tar_norm_consts=[
-                self.dataset.target_norm_mean,
-                self.dataset.target_norm_std,
-            ],
+            node_info=self.dloader.node_info,
             max_epochs=self.m.max_epochs,
             learning_rate=self.m.lr_rate,
             patience=self.m.patience,
@@ -169,7 +159,7 @@ class CompleteRun:
         # Log input/output ranges for user data to verify normalisation,
         # then profile a single batch of data.
         self.logger.debug("Profiling user data...")
-        data_sample, label_sample = next(iter(self.tra_loader.dataset))
+        data_sample, label_sample = next(iter(self.dloader.trn_loader.dataset))
         self.logger.debug(
             f"Data Inputs range: [{data_sample.min():.3f}, {data_sample.max():.3f}]"
         )
@@ -183,27 +173,21 @@ class CompleteRun:
         self.logger.info("Starting training loop...")
         self.trainer.train()
         self.logger.info("Training loop complete.")
-        self.dataset.cleanup()
+        # self.dloader.cleanup() TODO - re-enable
 
     def _test_model(self):
         # Grab training info
         train_losses, val_losses, early_stop_epoch = self.trainer.get_training_info()
-        in_norm_consts, out_norm_consts = self.dataset.get_normalisation_params()
-        _, target_labels = self.dataset.get_data_labels()
 
         self.tester = TestModel(
             model=self.model,
-            test_loader=self.tst_loader,
+            test_loader=self.dloader.tst_loader,
             training_losses=train_losses,
             validation_losses=val_losses,
             criterion_class=self.m.loss_function,
             early_stop_epoch=early_stop_epoch,
-            in_norm_consts=[self.dataset.input_norm_mean, self.dataset.input_norm_std],
-            tar_norm_consts=[
-                self.dataset.target_norm_mean,
-                self.dataset.target_norm_std,
-            ],
-            data_labels=target_labels,
+            node_info=self.dloader.node_info,
+            allowed_targets=self.m.target_params,
             device=self.device,
             save_path=self.m.m_save_dir,
             plot_path=self.m.logging_dir,
@@ -233,4 +217,4 @@ class CompleteRun:
         # Display the losses
         self.tester.plot_losses()
 
-        self.logger.info("Finished model execution.")
+        self.logger.info("Finished run.")

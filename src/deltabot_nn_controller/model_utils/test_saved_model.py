@@ -1,33 +1,43 @@
 import logging
 import os
+from collections.abc import Sequence
 
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from torch import autocast
+from torch.utils.data import DataLoader
+
+from deltabot_nn_controller.dataset_utils.dataloader import DatasetMetadata
 
 logger = logging.getLogger(os.path.basename(__file__))
 
 
 class TestModel:
+    """
+    TODO
+
+    Args:
+        TODO
+    """
+
     def __init__(
         self,
         model,
-        test_loader,
+        test_loader: DataLoader,
         training_losses,
         validation_losses,
         criterion_class,
         early_stop_epoch,
-        in_norm_consts: list[dict[str, float]],
-        tar_norm_consts: list[dict[str, float]],
-        data_labels,
-        save_path,
-        plot_path,
-        plot_name,
-        device,
-        logging,
-        test_display_num,
-        training_dtype,
+        node_info: DatasetMetadata,
+        allowed_targets: Sequence[dict[str, float]],
+        save_path: str,
+        plot_path: str,
+        plot_name: str,
+        device: str,
+        logging: bool,
+        test_display_num: int,
+        training_dtype: torch.dtype,
     ):
         # Instantiate user args
         self.model = model
@@ -36,8 +46,6 @@ class TestModel:
         self.val_losses = validation_losses
         self.criterion = criterion_class()
         self.early_stop_epoch = early_stop_epoch
-        self.in_norm_consts = in_norm_consts
-        self.data_labels = data_labels
         self.save_path = save_path
         self.plot_path = plot_path
         self.plot_name = plot_name
@@ -45,9 +53,10 @@ class TestModel:
         self.test_display_num = test_display_num
         self.training_dtype = training_dtype
 
-        self.means = np.array(list(tar_norm_consts[0].values()), dtype=np.float64)
-        self.stds = np.array(list(tar_norm_consts[1].values()), dtype=np.float64)
-        self.weights = 1.0 / (self.stds**2 + 1e-8)
+        self.means = node_info.target_denorm_params["mean"]
+        self.stds = node_info.target_denorm_params["std"]
+        self.weights = node_info.loss_weights
+        self.data_labels = [list(d.keys())[0] for d in allowed_targets]
 
     def _testing_loop(self):
         """
@@ -70,7 +79,9 @@ class TestModel:
                     outputs = self.model(data)
 
                     try:
-                        loss = self.criterion(outputs, labels, self.weights)
+                        loss = self.criterion(
+                            outputs, labels, self.weights.to(self.device)
+                        )
                     except TypeError:
                         # Fallback for built-in losses that don't accept weights
                         loss = self.criterion(outputs, labels)
@@ -95,13 +106,17 @@ class TestModel:
 
             # Split into states
             lengths = len(self.stds)
-
             n_points = len(outputs) // lengths
+
             outputs_reshaped = outputs.reshape(lengths, n_points)
 
+            # Extract individual values
+            means = np.array(list(self.means.values()))
+            stds = np.array(list(self.stds.values()))
+
             denormalized = (
-                outputs_reshaped.astype(np.float64) * self.stds[:, np.newaxis]
-            ) + self.means[:, np.newaxis]
+                outputs_reshaped.astype(np.float64) * stds[:, np.newaxis]
+            ) + means[:, np.newaxis]
 
             return denormalized
 
@@ -134,7 +149,7 @@ class TestModel:
                 t = targets[j, i]
                 d = diffs[j, i]
                 logger.info(
-                    f"{self.data_labels[j]:>8} | {p:>16.4f} | {t:>16.4f} | {d:>16.4f}"
+                    f"{self.data_labels[j]:>8} | {p:>16.4f} | {t:>16.4f} | {d:>15.4f}"
                 )
             logger.info(f"{seperator}")
 

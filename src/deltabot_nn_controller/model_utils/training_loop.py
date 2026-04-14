@@ -1,9 +1,11 @@
 import logging
 import os
 
-import numpy as np
 import torch
 from torch import autocast
+from torch.utils.data import DataLoader
+
+from deltabot_nn_controller.dataset_utils.dataloader import DatasetMetadata
 
 logger = logging.getLogger(os.path.basename(os.path.basename(__file__)))
 
@@ -16,54 +18,39 @@ class Trainer:
     Includes a diagnostic method to profile a single batch for performance bottlenecks.
 
     Args:
-        model: The neural network model to train
-        train_loader: DataLoader for training data
-        val_loader: DataLoader for validation data
-        test_loader: DataLoader for test data
-        device: Device to run training on (e.g., 'cuda' or 'cpu')
-        scaler_class: Class for mixed precision scaling (e.g., GradScaler)
-        optimizer_class: Optimizer class (e.g., torch.optim.Adam)
-        criterion_class: Loss function class (e.g., nn.MSELoss)
-        max_epochs: Maximum number of training epochs
-        learning_rate: Learning rate for the optimizer
-        min_delta: Minimum change in validation loss to qualify as an improvement
-        patience: Number of epochs with no improvement after which we stop training
-        save_path: Path to save the best model state dict
-        logging: Whether to print detailed logs during training
-        accumulation_steps: Number of batches to accumulate gradients over
+        TODO
     """
 
     def __init__(
         self,
         model,
-        train_loader,
-        val_loader,
-        device,
+        train_loader: DataLoader,
+        val_loader: DataLoader,
+        device: str,
         scaler_class,
         optimizer_class,
         criterion_class,
-        max_epochs,
-        learning_rate,
+        node_info: DatasetMetadata,
+        max_epochs: int,
+        learning_rate: float,
         min_delta,
         patience,
-        in_norm_consts: list[dict[str, float]],
-        tar_norm_consts: list[dict[str, float]],
         model_name,
-        save_path,
-        logging,
+        save_path: str,
+        logging: bool,
         accumulation_steps,
-        training_dtype,
+        training_dtype: torch.dtype,
     ):
         self.model = model
         self.train_loader = train_loader
         self.val_loader = val_loader
         self.device = device
         self.scaler = scaler_class(device=self.device)
-        self.criterion = criterion_class()
         self.num_epochs = max_epochs
         self.learning_rate = learning_rate
         self.min_delta = min_delta
         self.optimizer = optimizer_class(self.model.parameters(), lr=self.learning_rate)
+        self.criterion = criterion_class()
         self.patience = patience
         self.model_name = model_name
         self.save_path = save_path
@@ -71,9 +58,9 @@ class Trainer:
         self.accumulation_steps = accumulation_steps
         self.training_dtype = training_dtype
 
-        self.means = np.array(list(tar_norm_consts[0].values()), dtype=np.float64)
-        self.stds = np.array(list(tar_norm_consts[1].values()), dtype=np.float64)
-        self.weights = 1.0 / (self.stds**2 + 1e-8)
+        self.means = node_info.target_denorm_params["mean"]
+        self.stds = node_info.target_denorm_params["std"]
+        self.weights = node_info.loss_weights
 
         self.train_losses = []
         self.val_losses = []
@@ -154,7 +141,7 @@ class Trainer:
                 # Scale for accumulation
                 try:
                     loss = (
-                        self.criterion(outputs, labels, self.weights)
+                        self.criterion(outputs, labels, self.weights.to(self.device))
                         / self.accumulation_steps
                     )
                 except TypeError:

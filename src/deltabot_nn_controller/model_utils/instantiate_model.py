@@ -7,7 +7,7 @@ import torch.nn as nn
 import torch.optim as optim
 
 
-def resolve_class(name: str, module_paths: tuple[(str)] = ()):
+def resolve_class(name: str, module_paths: tuple[(str)] = ()) -> None:
     """
     Used to match custom loss classes.
     """
@@ -77,6 +77,9 @@ class RunConfiguration:
             "activations", ["ReLU"] * len(self.hidden_layers)
         )
         self.window_size = self.model_config.get("window_size", 1)
+        if self.window_size < 1:
+            raise ValueError(f"{self.window_size=} must be >= 1")
+
         self.batch_size = self.model_config["batch_size"]
         self.max_epochs = self.model_config["max_epochs"]
         self.patience = self.model_config["patience"]
@@ -85,7 +88,7 @@ class RunConfiguration:
         self.dtype = getattr(torch, self.model_config["training_dtype"])
         self.loss_function = resolve_class(
             self.model_config["loss_function"],
-            module_paths=("deltabot_nn_controller.model_zoo.losses",),
+            module_paths=("deltabot_nn_controller.model_zoo.losses.weighted_mse",),
         )
         self.optimiser = getattr(torch.optim, self.model_config["optimiser"])
         self.grad_scaler = getattr(torch.amp, self.model_config["grad_scaler"])
