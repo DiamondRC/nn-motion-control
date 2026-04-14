@@ -1,5 +1,26 @@
 import json
 import os
+from importlib import import_module
+
+import torch
+import torch.nn as nn
+import torch.optim as optim
+
+
+def resolve_class(name: str, module_paths: tuple[(str)] = ()):
+    """
+    Used to match custom loss classes.
+    """
+    for module_path in module_paths:
+        module = import_module(module_path)
+        if hasattr(module, name):
+            return getattr(module, name)
+
+    for namespace in (nn, optim, torch.amp):
+        if hasattr(namespace, name):
+            return getattr(namespace, name)
+
+    raise ValueError(f"Unknown class name: {name}")
 
 
 class RunConfiguration:
@@ -61,7 +82,13 @@ class RunConfiguration:
         self.patience = self.model_config["patience"]
         self.min_delta = self.model_config["min_delta"]
         self.lr_rate = self.model_config["learning_rate"]
-        self.dtype = self.model_config["training_dtype"]
+        self.dtype = getattr(torch, self.model_config["training_dtype"])
+        self.loss_function = resolve_class(
+            self.model_config["loss_function"],
+            module_paths=("deltabot_nn_controller.model_zoo.losses",),
+        )
+        self.optimiser = getattr(torch.optim, self.model_config["optimiser"])
+        self.grad_scaler = getattr(torch.amp, self.model_config["grad_scaler"])
 
         # Testing
         self.display_no = self.model_config["test_display_num"]

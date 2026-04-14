@@ -4,11 +4,10 @@ import time
 from datetime import datetime
 
 import torch
-from torch.amp import GradScaler
-from torch.nn import MSELoss
-from torch.optim import Adam
 
-from deltabot_nn_controller.dataset_utils.dataloader import PVT2DACDataset
+from deltabot_nn_controller.dataset_utils.dataloader import (
+    build_time_series_splits,
+)
 from deltabot_nn_controller.model_utils.instantiate_model import RunConfiguration
 from deltabot_nn_controller.model_utils.setup_logging import ModelLogger
 from deltabot_nn_controller.model_utils.test_saved_model import TestModel
@@ -71,26 +70,32 @@ class CompleteRun:
             self.device = "cpu"
 
     def _create_run_dataloaders(self):
-        self.dataset = PVT2DACDataset(
-            h5_path=self.m.datafile_dir,
-            batch_size=self.m.batch_size,
-            train_ratio=self.m.train_ratio,
-            val_ratio=self.m.val_ratio,
-            do_auto_tune_dataloader=self.m.do_dataloader_auto_tune,
-            cpu_core_util=self.m.p_cpu_util,
-            num_workers=self.m.num_workers,
-            prefetch_factor=self.m.prefetch_factor,
-            seed=self.m.seed,
-            logging=self.m.do_verb_log,
-            window_size=self.m.window_size,
-            allowed_inputs=self.m.input_params,
-            allowed_targets=self.m.target_params,
+        self.dataset, self.tra_loader, self.val_loader, self.tst_loader = (
+            build_time_series_splits(
+                h5_path=self.m.datafile_dir,
+                allowed_inputs=self.m.input_params,
+                allowed_targets=self.m.target_params,
+                window_size=self.m.window_size,
+                train_ratio=self.m.train_ratio,
+                val_ratio=self.m.val_ratio,
+                seed=self.m.seed,
+                batch_size=self.m.batch_size,
+                num_workers=self.m.num_workers,
+                cpu_core_util=self.m.p_cpu_util,
+                prefetch_factor=self.m.prefetch_factor,
+                persistent_workers=False,
+                pin_memory=True,
+                auto_tune_workers=self.m.do_dataloader_auto_tune,
+                enable_logging=self.m.do_verb_log,
+                load_into_ram=True,
+            )
         )
-        self.tra_loader, self.val_loader, self.tst_loader = (
-            self.dataset.train_loader,
-            self.dataset.val_loader,
-            self.dataset.test_loader,
-        )
+
+        # self.tra_loader, self.val_loader, self.tst_loader = (
+        #     self.dataset.train_loader,
+        #     self.dataset.val_loader,
+        #     self.dataset.test_loader,
+        # )
 
     def _create_model(self):
         # TODO - model selection
@@ -104,9 +109,14 @@ class CompleteRun:
             train_loader=self.tra_loader,
             val_loader=self.val_loader,
             device=self.device,
-            scaler_class=GradScaler,  # TODO
-            optimizer_class=Adam,  # allow configing
-            criterion_class=MSELoss,  # of these
+            scaler_class=self.m.grad_scaler,
+            optimizer_class=self.m.optimiser,
+            criterion_class=self.m.loss_function,
+            in_norm_consts=[self.dataset.input_norm_mean, self.dataset.input_norm_std],
+            tar_norm_consts=[
+                self.dataset.target_norm_mean,
+                self.dataset.target_norm_std,
+            ],
             max_epochs=self.m.max_epochs,
             learning_rate=self.m.lr_rate,
             patience=self.m.patience,
@@ -124,6 +134,7 @@ class CompleteRun:
         dummy_input = torch.randn(1, self.m.input_size * self.m.window_size).to(
             self.device
         )
+        self.logger.debug(f"Using autocast to {self.m.dtype}")
         self.logger.debug(f"Dummy input shape: {dummy_input.shape}")
 
         with torch.no_grad():
@@ -172,7 +183,7 @@ class CompleteRun:
         self.logger.info("Starting training loop...")
         self.trainer.train()
         self.logger.info("Training loop complete.")
-        self.dataset.cleanup_dataloaders()
+        self.dataset.cleanup()
 
     def _test_model(self):
         # Grab training info
@@ -185,10 +196,13 @@ class CompleteRun:
             test_loader=self.tst_loader,
             training_losses=train_losses,
             validation_losses=val_losses,
-            criterion_class=MSELoss,  # TODO - make this configurable
+            criterion_class=self.m.loss_function,
             early_stop_epoch=early_stop_epoch,
-            in_norm_consts=in_norm_consts,
-            tar_norm_consts=out_norm_consts,
+            in_norm_consts=[self.dataset.input_norm_mean, self.dataset.input_norm_std],
+            tar_norm_consts=[
+                self.dataset.target_norm_mean,
+                self.dataset.target_norm_std,
+            ],
             data_labels=target_labels,
             device=self.device,
             save_path=self.m.m_save_dir,

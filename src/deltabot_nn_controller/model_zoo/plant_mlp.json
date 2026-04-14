@@ -70,5 +70,8 @@
   "min_delta": 1e-4,
   "learning_rate": 3e-4,
   "test_display_num": 3,
-  "training_dtype": "bfloat16"
+  "training_dtype": "float32",
+  "loss_function": "SmoothL1Loss",
+  "optimiser": "AdamW",
+  "grad_scaler": "GradScaler"
 }

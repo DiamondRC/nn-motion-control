@@ -18,8 +18,8 @@ class TestModel:
         validation_losses,
         criterion_class,
         early_stop_epoch,
-        in_norm_consts,
-        tar_norm_consts,
+        in_norm_consts: list[dict[str, float]],
+        tar_norm_consts: list[dict[str, float]],
         data_labels,
         save_path,
         plot_path,
@@ -37,7 +37,6 @@ class TestModel:
         self.criterion = criterion_class()
         self.early_stop_epoch = early_stop_epoch
         self.in_norm_consts = in_norm_consts
-        self.tar_norm_consts = tar_norm_consts
         self.data_labels = data_labels
         self.save_path = save_path
         self.plot_path = plot_path
@@ -45,6 +44,10 @@ class TestModel:
         self.device = device
         self.test_display_num = test_display_num
         self.training_dtype = training_dtype
+
+        self.means = np.array(list(tar_norm_consts[0].values()), dtype=np.float64)
+        self.stds = np.array(list(tar_norm_consts[1].values()), dtype=np.float64)
+        self.weights = 1.0 / (self.stds**2 + 1e-8)
 
     def _testing_loop(self):
         """
@@ -63,9 +66,15 @@ class TestModel:
                     data.to(self.device, non_blocking=True),
                     labels.to(self.device, non_blocking=True),
                 )
-                with autocast(device_type=self.device, dtype=torch.bfloat16):
+                with autocast(device_type=self.device, dtype=self.training_dtype):
                     outputs = self.model(data)
-                    loss = self.criterion(outputs, labels)
+
+                    try:
+                        loss = self.criterion(outputs, labels, self.weights)
+                    except TypeError:
+                        # Fallback for built-in losses that don't accept weights
+                        loss = self.criterion(outputs, labels)
+
                     total_loss += loss.item()
 
                 # Collect predictions and targets for metrics
@@ -85,17 +94,14 @@ class TestModel:
             outputs = np.array(outputs)
 
             # Split into states
-            n_points = len(outputs) // 13
-            outputs_reshaped = outputs.reshape(13, n_points)
+            lengths = len(self.stds)
 
-            means = self.tar_norm_consts[0, :]
-            stds = self.tar_norm_consts[1, :]
+            n_points = len(outputs) // lengths
+            outputs_reshaped = outputs.reshape(lengths, n_points)
 
-            # Add new axis for broadcasting (13,) -> (13,1)
-            means = means[:, np.newaxis]
-            stds = stds[:, np.newaxis]
-
-            denormalized = (outputs_reshaped.astype(np.float64) * stds) + means
+            denormalized = (
+                outputs_reshaped.astype(np.float64) * self.stds[:, np.newaxis]
+            ) + self.means[:, np.newaxis]
 
             return denormalized
 
@@ -120,9 +126,6 @@ class TestModel:
         targets = self.all_targets_denorm[:, : self.test_display_num]
         diffs = np.sqrt((preds - targets) ** 2)
 
-        # Grab labels for the outputs
-        axes = np.char.replace(self.data_labels.astype(str), "_nxt", "")
-
         # Display model prediction against target
         no_states = len(preds[:, 0])
         for i in range(0, self.test_display_num):
@@ -130,7 +133,9 @@ class TestModel:
                 p = preds[j, i]
                 t = targets[j, i]
                 d = diffs[j, i]
-                logger.info(f"{axes[j]:>8} | {p:>16.4f} | {t:>16.4f} | {d:>16.4f}")
+                logger.info(
+                    f"{self.data_labels[j]:>8} | {p:>16.4f} | {t:>16.4f} | {d:>16.4f}"
+                )
             logger.info(f"{seperator}")
 
         def _calculate_mae(pred, tar):
@@ -176,7 +181,7 @@ class TestModel:
         logger.info(f"{seperator}")
         logger.info("Variable specific metrics:")
         logger.info(f"{seperator}")
-        for idx, axis in enumerate(axes):
+        for idx, axis in enumerate(self.data_labels):
             _calculate_metrics(
                 self.all_predictions_denorm[idx],
                 self.all_targets_denorm[idx],

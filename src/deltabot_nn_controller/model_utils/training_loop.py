@@ -1,6 +1,7 @@
 import logging
 import os
 
+import numpy as np
 import torch
 from torch import autocast
 
@@ -45,6 +46,8 @@ class Trainer:
         learning_rate,
         min_delta,
         patience,
+        in_norm_consts: list[dict[str, float]],
+        tar_norm_consts: list[dict[str, float]],
         model_name,
         save_path,
         logging,
@@ -67,6 +70,10 @@ class Trainer:
         self.logging = logging
         self.accumulation_steps = accumulation_steps
         self.training_dtype = training_dtype
+
+        self.means = np.array(list(tar_norm_consts[0].values()), dtype=np.float64)
+        self.stds = np.array(list(tar_norm_consts[1].values()), dtype=np.float64)
+        self.weights = 1.0 / (self.stds**2 + 1e-8)
 
         self.train_losses = []
         self.val_losses = []
@@ -103,10 +110,8 @@ class Trainer:
         logger.debug("Running forward pass with autocast for profiling...")
         start_event.record()
 
-        # TODO - unify dtypes for profiling, training and future quant
-        with autocast(device_type=self.device, dtype=torch.bfloat16):
+        with autocast(device_type=self.device, dtype=self.training_dtype):
             outputs = self.model(data)
-            # loss = self.criterion(outputs, labels)
 
         end_event.record()
         end_event.synchronize()
@@ -143,11 +148,18 @@ class Trainer:
             )
 
             # Mixed precision context for later quantisation support
-            with autocast(device_type=self.device, dtype=torch.bfloat16):
+            with autocast(device_type=self.device, dtype=self.training_dtype):
                 outputs = self.model(data)
-                loss = (
-                    self.criterion(outputs, labels) / self.accumulation_steps
-                )  # Scale for accumulation
+
+                # Scale for accumulation
+                try:
+                    loss = (
+                        self.criterion(outputs, labels, self.weights)
+                        / self.accumulation_steps
+                    )
+                except TypeError:
+                    # Fallback for built-in losses that don't accept weights
+                    loss = self.criterion(outputs, labels) / self.accumulation_steps
 
             # Guard against NaN/Inf loss which can destabilize training
             if torch.isnan(loss) or torch.isinf(loss):
@@ -222,6 +234,9 @@ class Trainer:
 
         best_val_loss = float("inf")
         epochs_no_improve = 0
+        logger.debug(
+            f"Training using {self.criterion} loss and {self.optimizer} optimizer"
+        )
 
         for epoch in range(self.num_epochs):
             try:

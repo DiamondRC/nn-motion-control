@@ -71,6 +71,7 @@ lockfiles/
 .ruff_cache/
 
 # ML data
+archive/
 data/
 *.pth
 logs/

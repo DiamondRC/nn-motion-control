@@ -6,7 +6,7 @@ import typer
 
 from . import __version__
 from .globals import NaturalOrderGroup
-from .model_utils.model_creation import CompleteRun
+from .model_utils.run_all import CompleteRun
 
 __all__ = ["main"]
 
