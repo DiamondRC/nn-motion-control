@@ -7,7 +7,7 @@ import torch.nn as nn
 import torch.optim as optim
 
 
-def resolve_class(name: str, module_paths: tuple[(str)] = ()) -> type[nn.Module]:
+def resolve_class(name: str, module_paths: tuple[(str, ...)] = ()) -> type[nn.Module]:
     """
     Used to match custom loss classes.
     """
@@ -74,16 +74,7 @@ class RunConfiguration:
         elif self.target_size == 0:
             raise ValueError(f"{self.target_size=} must be >= 1")
 
-        self.dropout = self.model_config.get("dropout", 0.0)
-        self.layer_norm = self.model_config.get("layer_norm", True)
         self.hidden_layers = self.model_config["hidden_layers"]
-        self.activations = self.model_config.get(
-            "activations", ["ReLU"] * len(self.hidden_layers)
-        )
-        if len(self.activations) != len(self.hidden_layers):
-            raise ValueError(
-                f"{len(self.activations)=} must equal {len(self.hidden_layers)=}"
-            )
         self.window_size = self.model_config.get("window_size", 1)
         if self.window_size < 1:
             raise ValueError(f"{self.window_size=} must be >= 1")
@@ -96,7 +87,10 @@ class RunConfiguration:
         self.dtype = getattr(torch, self.model_config["training_dtype"])
         self.loss_function = resolve_class(
             self.model_config["loss_function"],
-            module_paths=("deltabot_nn_controller.model_zoo.losses.weighted_mse",),
+            module_paths=(
+                "deltabot_nn_controller.model_zoo.losses.weighted_mse",
+                "torch.nn",
+            ),
         )
         self.optimiser = getattr(torch.optim, self.model_config["optimiser"])
         self.grad_scaler = getattr(torch.amp, self.model_config["grad_scaler"])

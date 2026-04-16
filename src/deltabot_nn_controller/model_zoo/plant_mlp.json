@@ -56,34 +56,100 @@
   ],
   "hidden_layers": [
     {
-      "Linear": 2048
+      "Linear": [
+        2048
+      ]
+    },
+    "ReLU",
+    {
+      "LayerNorm": [2048]
     },
     {
-      "Linear": 1024
+      "Dropout": [
+        0.2
+      ]
     },
     {
-      "Linear": 512
+      "Linear": [
+        2048,
+        1024
+      ]
+    },
+    "ReLU",
+    {
+      "LayerNorm": [1024]
     },
     {
-      "Linear": 256
+      "Dropout": [
+        0.2
+      ]
     },
     {
-      "Linear": 512
+      "Linear": [
+        1024,
+        512
+      ]
+    },
+    "ReLU",
+    {
+      "LayerNorm": [512]
     },
     {
-      "Linear": 1024
+      "Dropout": [
+        0.2
+      ]
+    },
+    {
+      "Linear": [
+        512,
+        256
+      ]
+    },
+    "ReLU",
+    {
+      "LayerNorm": [256]
+    },
+    {
+      "Dropout": [
+        0.2
+      ]
+    },
+    {
+      "Linear": [
+        256,
+        512
+      ]
+    },
+    "ReLU",
+    {
+      "LayerNorm": [512]
+    },
+    {
+      "Dropout": [
+        0.2
+      ]
+    },
+    {
+      "Linear": [
+        512,
+        1024
+      ]
+    },
+    "ReLU",
+    {
+      "LayerNorm": [1024]
+    },
+    {
+      "Dropout": [
+        0.2
+      ]
+    },
+    {
+      "Linear": [
+        1024
+      ]
     }
   ],
-  "activations": [
-    "ReLU",
-    "ReLU",
-    "ReLU",
-    "ReLU",
-    "ReLU",
-    "ReLU"
-  ],
-  "dropout": 0.2,
-  "layer_norm": true,
   "window_size": 40,
   "model_name": "Plant",
   "model_save_dir": "src/deltabot_nn_controller/model_zoo/models/model_states",

@@ -20,20 +20,19 @@ class JsonModel(nn.Module):
         self.c = config
 
         self.logging: bool = self.c.do_verb_log
-        self.activations: list[type[nn.Module]] = []
-        self.hidden_layer: list[type[nn.Module]] = []
-        self.hidden_sizes: list[int] = []
+        self.hidden_layers: list[dict[type[nn.Module], list[int] | None]] = []
 
-        for layer_dict in self.c.hidden_layers:
-            for name, size in layer_dict.items():
-                cls = resolve_class(name, module_paths=("torch.nn",))
-                self.hidden_layer.append(cls)
-                self.hidden_sizes.append(size)
-                break
-
-        for name in self.c.activations:
-            cls = resolve_class(name, module_paths=("torch.nn",))
-            self.activations.append(cls)
+        # Unpack the model configuration
+        for layer in self.c.hidden_layers:
+            if isinstance(layer, dict):
+                for name, size in layer.items():
+                    cls = resolve_class(name, module_paths=("torch.nn",))
+                    self.hidden_layers.append({cls: size})
+            elif isinstance(layer, str):
+                cls = resolve_class(layer, module_paths=("torch.nn",))
+                self.hidden_layers.append({cls: None})
+            else:
+                raise TypeError(f"Unknown arg type in model config: {layer}")
 
         # Model config
         super().__init__()
@@ -43,8 +42,6 @@ class JsonModel(nn.Module):
     # Constructs the model based on the provided config
     def _build_model(self):
         output_size = self.c.target_size
-        dropout = self.c.dropout
-        layer_norm = self.c.layer_norm
         window_size = self.c.window_size
         # Flatten input if using windows
         input_size = self.c.input_size * window_size
@@ -55,15 +52,22 @@ class JsonModel(nn.Module):
             logger.debug(f"Model Outputs: {self.c.target_params}")
             logger.debug(f"Model Input size {input_size}")
             logger.debug(f"Model Output size {output_size}")
-            logger.debug(f"LayerNorm enabled: {layer_norm}")
-            logger.debug(f"Using Dropout: {dropout}")
 
         layers = []
 
-        layers.append(self.hidden_layer[0](input_size, self.hidden_sizes[0]))
-        for idx, layer in enumerate(self.hidden_layer[1:]):
-            layers.append(layer(self.hidden_sizes[idx], self.hidden_sizes[idx + 1]))
-        layers.append(self.hidden_layer[-1](self.hidden_sizes[-1], output_size))
+        layer_type = next(iter(self.hidden_layers[0].keys()))
+        layers.append(
+            layer_type(input_size, *next(iter(self.hidden_layers[0].values())))
+        )
+
+        for entry in self.hidden_layers[1:-1]:
+            for layer, args in entry.items():
+                layers.append(layer(*args) if args else layer())
+
+        layer_type = next(iter(self.hidden_layers[-1].keys()))
+        layers.append(
+            layer_type(*next(iter(self.hidden_layers[-1].values())), output_size)
+        )
 
         self.network = nn.Sequential(*layers)
 
