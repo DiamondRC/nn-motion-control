@@ -12,7 +12,7 @@ from deltabot_nn_controller.model_utils.instantiate_model import RunConfiguratio
 from deltabot_nn_controller.model_utils.setup_logging import ModelLogger
 from deltabot_nn_controller.model_utils.test_saved_model import TestModel
 from deltabot_nn_controller.model_utils.training_loop import Trainer
-from deltabot_nn_controller.model_zoo.models.mlp import MLP
+from deltabot_nn_controller.model_zoo.models.json_model import JsonModel
 
 
 class CompleteRun:
@@ -93,7 +93,7 @@ class CompleteRun:
 
     def _create_model(self):
         # TODO - model selection
-        self.model = MLP(logging=self.m.do_verb_log, model=self.m)
+        self.model = JsonModel(config=self.m)
         self.model.to(self.device)
 
     def _run_trainer(self):

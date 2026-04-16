@@ -67,16 +67,6 @@ class Trainer:
         self.stopped_early = 0
         self.test_results = {}
 
-        # Return model shape and parameter count
-        if self.logging:
-            logger.debug("Parameter devices:")
-            for name, param in self.model.named_parameters():
-                logger.debug(f"{name}: {param.device}, shape={param.shape}")
-            logger.debug(
-                "GPU param count: "
-                f"{sum(1 for p in self.model.parameters() if p.device.type == 'cuda')}"
-            )
-
     def profile_one_batch(self):
         """
         Verbose diagnostic function to profile the model.

@@ -7,7 +7,7 @@ import torch.nn as nn
 import torch.optim as optim
 
 
-def resolve_class(name: str, module_paths: tuple[(str)] = ()) -> None:
+def resolve_class(name: str, module_paths: tuple[(str)] = ()) -> type[nn.Module]:
     """
     Used to match custom loss classes.
     """
@@ -47,7 +47,6 @@ class RunConfiguration:
         """
         # Scaffolding
         self.model_name = self.model_config["model_name"]
-        self.network_type = self.model_config["network_type"]
         self.m_save_dir = f"{self.model_config['model_save_dir']}/{self.model_name}.pth"
         self.logging_dir = self.model_config["logging_dir"]
         self.seed = self.model_config["seed"]
@@ -70,12 +69,21 @@ class RunConfiguration:
         self.target_params = self.model_config["target_params"]
         self.input_size = len(self.input_params)
         self.target_size = len(self.target_params)
+        if self.input_size == 0:
+            raise ValueError(f"{self.input_size=} must be >= 1")
+        elif self.target_size == 0:
+            raise ValueError(f"{self.target_size=} must be >= 1")
+
         self.dropout = self.model_config.get("dropout", 0.0)
         self.layer_norm = self.model_config.get("layer_norm", True)
         self.hidden_layers = self.model_config["hidden_layers"]
         self.activations = self.model_config.get(
             "activations", ["ReLU"] * len(self.hidden_layers)
         )
+        if len(self.activations) != len(self.hidden_layers):
+            raise ValueError(
+                f"{len(self.activations)=} must equal {len(self.hidden_layers)=}"
+            )
         self.window_size = self.model_config.get("window_size", 1)
         if self.window_size < 1:
             raise ValueError(f"{self.window_size=} must be >= 1")

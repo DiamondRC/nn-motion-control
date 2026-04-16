@@ -1,5 +1,4 @@
 {
-  "network_type": "mlp",
   "input_params": [
     "x_pos",
     "x_vel",
@@ -18,29 +17,64 @@
     "z_DAC_real"
   ],
   "target_params": [
-    {"x_pos_nxt": 1},
-    {"x_vel_nxt": 10},
-    {"x_acc_nxt": 5},
-    {"x_jer_nxt": 1},
-    {"y_pos_nxt": 1},
-    {"y_vel_nxt": 10},
-    {"y_acc_nxt": 5},
-    {"y_jer_nxt": 1},
-    {"z_pos_nxt": 10},
-    {"z_vel_nxt": 5},
-    {"z_acc_nxt": 1},
-    {"z_jer_nxt": 1}
+    {
+      "x_pos_nxt": 1
+    },
+    {
+      "x_vel_nxt": 50
+    },
+    {
+      "x_acc_nxt": 5
+    },
+    {
+      "x_jer_nxt": 1
+    },
+    {
+      "y_pos_nxt": 1
+    },
+    {
+      "y_vel_nxt": 50
+    },
+    {
+      "y_acc_nxt": 5
+    },
+    {
+      "y_jer_nxt": 1
+    },
+    {
+      "z_pos_nxt": 1
+    },
+    {
+      "z_vel_nxt": 50
+    },
+    {
+      "z_acc_nxt": 5
+    },
+    {
+      "z_jer_nxt": 1
+    }
   ],
   "hidden_layers": [
-    2048,
-    1024,
-    512,
-    256,
-    512,
-    1024
+    {
+      "Linear": 2048
+    },
+    {
+      "Linear": 1024
+    },
+    {
+      "Linear": 512
+    },
+    {
+      "Linear": 256
+    },
+    {
+      "Linear": 512
+    },
+    {
+      "Linear": 1024
+    }
   ],
   "activations": [
-    "ReLU",
     "ReLU",
     "ReLU",
     "ReLU",
@@ -50,7 +84,7 @@
   ],
   "dropout": 0.2,
   "layer_norm": true,
-  "window_size": 1,
+  "window_size": 40,
   "model_name": "Plant",
   "model_save_dir": "src/deltabot_nn_controller/model_zoo/models/model_states",
   "logging_dir": "logs",
