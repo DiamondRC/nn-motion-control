@@ -313,13 +313,15 @@ class H5TimeSeriesDataset(Dataset):
         if idx < 0 or idx >= len(self):
             raise IndexError(idx)
 
+        # Load from RAM if available
         if self._inputs is not None and self._targets is not None:
             if self.window_size == 1:
                 return self._inputs[idx], self._targets[idx]
-            x = self._inputs[idx : idx + self.window_size]
+            x = self._inputs[idx : idx + self.window_size].T
             y = self._targets[idx + self.window_size - 1]
             return x, y
 
+        # Otherwise fetch from file
         f = self._open_file()
         if self.window_size == 1:
             x = f[self.DATA_KEY][idx, self._input_idx]
@@ -328,7 +330,7 @@ class H5TimeSeriesDataset(Dataset):
                 y, dtype=self.dtype
             )
 
-        x = f[self.DATA_KEY][idx : idx + self.window_size, self._input_idx]
+        x = f[self.DATA_KEY][idx : idx + self.window_size, self._input_idx].T
         y = f[self.TARGET_KEY][idx + self.window_size - 1, self._target_idx]
         return torch.as_tensor(x, dtype=self.dtype), torch.as_tensor(
             y, dtype=self.dtype

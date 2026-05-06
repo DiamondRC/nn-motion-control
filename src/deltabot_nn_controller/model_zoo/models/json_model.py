@@ -1,14 +1,45 @@
 import logging
 import os
+from dataclasses import dataclass, field
 
 import torch.nn as nn
 
-from deltabot_nn_controller.model_utils.instantiate_model import (
-    RunConfiguration,
-    resolve_class,
-)
+from deltabot_nn_controller.model_utils.instantiate_model import RunConfiguration
+from deltabot_nn_controller.model_zoo.layers.tcn import TemporalBlock
 
 logger = logging.getLogger(os.path.basename(__file__))
+
+
+@dataclass(frozen=True)
+class ModelComponents:
+    registry: dict = field(
+        default_factory=lambda: {
+            # Expects input shape [batch, features * time]
+            "Linear": {"cls": nn.Linear, "temporal": False},
+            "ReLU": {"cls": nn.ReLU, "temporal": False},
+            "Dropout": {"cls": nn.Dropout, "temporal": False},
+            "Flatten": {"cls": nn.Flatten, "temporal": False},
+            # Expects input shape [batch, features, time]
+            "AdaptiveAvgPool1d": {"cls": nn.AdaptiveAvgPool1d, "temporal": True},
+            "Conv1d": {"cls": nn.Conv1d, "temporal": True},
+            "LSTM": {"cls": nn.LSTM, "temporal": True},
+            "GRU": {"cls": nn.GRU, "temporal": True},
+            # Custom
+            "TemporalConv": {"cls": TemporalBlock, "temporal": True},
+        }
+    )
+
+    def get(self, name: str) -> nn.Module:
+        entry = self.registry.get(name)
+        if entry is None:
+            raise ValueError(f"Unsupported layer {name}.")
+        return entry["cls"]
+
+    def is_temporal(self, name: str) -> bool:
+        entry = self.registry.get(name)
+        if entry is None:
+            raise ValueError(f"Unsupported layer {name}.")
+        return entry["temporal"]
 
 
 class JsonModel(nn.Module):
@@ -22,18 +53,6 @@ class JsonModel(nn.Module):
         self.logging: bool = self.c.do_verb_log
         self.hidden_layers: list[dict[type[nn.Module], list[int] | None]] = []
 
-        # Unpack the model configuration
-        for layer in self.c.hidden_layers:
-            if isinstance(layer, dict):
-                for name, size in layer.items():
-                    cls = resolve_class(name, module_paths=("torch.nn",))
-                    self.hidden_layers.append({cls: size})
-            elif isinstance(layer, str):
-                cls = resolve_class(layer, module_paths=("torch.nn",))
-                self.hidden_layers.append({cls: None})
-            else:
-                raise TypeError(f"Unknown arg type in model config: {layer}")
-
         # Model config
         super().__init__()
         self._build_model()
@@ -43,31 +62,65 @@ class JsonModel(nn.Module):
     def _build_model(self):
         output_size = self.c.target_size
         window_size = self.c.window_size
-        # Flatten input if using windows
-        input_size = self.c.input_size * window_size
-
         if self.logging:
             logger.debug("Building Model...")
             logger.debug(f"Model Inputs: {self.c.input_params}")
             logger.debug(f"Model Outputs: {self.c.target_params}")
-            logger.debug(f"Model Input size {input_size}")
-            logger.debug(f"Model Output size {output_size}")
+            logger.debug(f"Model Window Size: {window_size}")
+            logger.debug(
+                f"Model Input Size: {self.c.input_size} * {window_size} "
+                f"= {self.c.input_size * window_size}"
+            )
+            logger.debug(f"Model Output Size: {output_size}")
 
         layers = []
+        components = ModelComponents()
 
-        layer_type = next(iter(self.hidden_layers[0].keys()))
-        layers.append(
-            layer_type(input_size, *next(iter(self.hidden_layers[0].values())))
-        )
+        # Auto-detect if we need to flatten data
+        first_layer = next(iter(self.c.hidden_layers))
+        first_name = next(iter(first_layer.keys()))
+        self.is_temporal_model = components.is_temporal(first_name)
 
-        for entry in self.hidden_layers[1:-1]:
-            for layer, args in entry.items():
-                layers.append(layer(*args) if args else layer())
+        for idx, layer in enumerate(self.c.hidden_layers):
+            if isinstance(layer, dict):
+                name, args = next(iter(layer.items()))
 
-        layer_type = next(iter(self.hidden_layers[-1].keys()))
-        layers.append(
-            layer_type(*next(iter(self.hidden_layers[-1].values())), output_size)
-        )
+                # Validate layer type exists
+                layer_class = components.get(name)
+
+                if name == "Linear":
+                    if self.is_temporal_model:
+                        # Never multiply by window_size for temporal models
+                        layers.append(layer_class(*args) if args else layer_class())
+                    else:
+                        # Non-temporal flatten time dimension including the window size
+                        if idx == 0 and window_size != 1:
+                            layers.append(
+                                layer_class((args[0] * window_size, *args[1:]))
+                                if args
+                                else layer_class()
+                            )
+                        else:
+                            layers.append(layer_class(*args) if args else layer_class())
+
+                elif name == "ReLU":
+                    layers.append(layer_class())
+
+                elif name in ["Dropout", "AdaptiveAvgPool1d", "Flatten"]:
+                    layers.append(layer_class(*args))
+
+                elif name == "Conv1d":
+                    layers.append(
+                        layer_class((args[0], window_size, *args[1:]))
+                        if args
+                        else layer_class()
+                    )
+
+                elif name == "TemporalConv":
+                    layers.append(layer_class(*args))
+
+                else:
+                    layers.append(layer_class(*args))
 
         self.network = nn.Sequential(*layers)
 
@@ -84,12 +137,10 @@ class JsonModel(nn.Module):
                 nn.init.zeros_(m.bias)
 
     def forward(self, x):
-        """
-        Handle flattening for sliding window input if necessary,
-        then pass through the network.
-        """
-
-        if x.dim() == 3:  # [B, window_size, features]
-            x = x.flatten(start_dim=1)  # [B, window_size*features]
-        # if x.dim() == 2, already correct shape ([B, features]), return
-        return self.network(x)
+        if self.is_temporal_model:
+            if x.dim() != 3:
+                raise ValueError(f"Expected [B, C, T], got {x.shape}")
+            return self.network(x)  # [batch, features, time]
+        else:
+            # MLP: flatten to [batch, features*time]
+            return self.network(x.flatten(start_dim=1))

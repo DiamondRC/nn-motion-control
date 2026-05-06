@@ -65,19 +65,30 @@ class RunConfiguration:
         self.val_ratio = self.model_config["validation_ratio"]
 
         # Training
-        self.input_params = self.model_config["input_params"]
-        self.target_params = self.model_config["target_params"]
-        self.input_size = len(self.input_params)
-        self.target_size = len(self.target_params)
-        if self.input_size == 0:
-            raise ValueError(f"{self.input_size=} must be >= 1")
-        elif self.target_size == 0:
-            raise ValueError(f"{self.target_size=} must be >= 1")
-
         self.hidden_layers = self.model_config["hidden_layers"]
         self.window_size = self.model_config.get("window_size", 1)
         if self.window_size < 1:
             raise ValueError(f"{self.window_size=} must be >= 1")
+        self.input_params = self.model_config["input_params"]
+        self.target_params = self.model_config["target_params"]
+        self.input_size = list(self.hidden_layers[0].values())[0][0]
+        self.target_size = list(self.hidden_layers[-1].values())[0][-1]
+        input_size = len(self.input_params)
+        target_size = len(self.target_params)
+        if input_size == 0:
+            raise ValueError(f"{input_size=} must be >= 1")
+        elif target_size == 0:
+            raise ValueError(f"{target_size=} must be >= 1")
+        elif self.input_size != input_size:
+            raise ValueError(
+                f"The specified model input size ({self.input_size}) "
+                f"must match the size of the model inputs ({input_size})"
+            )
+        elif self.target_size != target_size:
+            raise ValueError(
+                f"The specified model out size ({self.target_size}) "
+                f"must match the size of the model outputs ({target_size})"
+            )
 
         self.batch_size = self.model_config["batch_size"]
         self.max_epochs = self.model_config["max_epochs"]

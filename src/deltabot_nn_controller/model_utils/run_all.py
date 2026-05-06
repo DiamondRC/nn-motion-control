@@ -25,18 +25,18 @@ class CompleteRun:
         self._cuda_profiling()
         self.logger.info("Starting Run...")
 
-        # Create dataloaders
-        self._create_run_dataloaders()
-
         # Instantiate model architecture
         self._create_model()
+
+        # Create dataloaders
+        self._create_run_dataloaders()
 
         # Train model
         self._run_trainer()
 
-        # Pass dummy data through the model
-        if self.m.do_verb_log:
-            self._dummy_test()
+        # # Pass dummy data through the model
+        # if self.m.do_verb_log:
+        #     self._dummy_test()
 
         # Train the model
         self._train_model()

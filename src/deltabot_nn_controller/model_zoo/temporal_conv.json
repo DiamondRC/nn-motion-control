@@ -56,117 +56,79 @@
   ],
   "hidden_layers": [
     {
-      "Linear": [
-        15, 2048
-      ]
-    },
-    "ReLU",
-    {
-      "LayerNorm": [2048]
-    },
-    {
-      "Dropout": [
+      "TemporalConv": [
+        15,
+        32,
+        3,
+        1,
+        1,
         0.2
       ]
     },
     {
-      "Linear": [
-        2048,
-        1024
-      ]
-    },
-    "ReLU",
-    {
-      "LayerNorm": [1024]
-    },
-    {
-      "Dropout": [
+      "TemporalConv": [
+        32,
+        64,
+        3,
+        1,
+        2,
         0.2
       ]
     },
     {
-      "Linear": [
-        1024,
-        512
-      ]
-    },
-    "ReLU",
-    {
-      "LayerNorm": [512]
-    },
-    {
-      "Dropout": [
+      "TemporalConv": [
+        64,
+        96,
+        3,
+        1,
+        4,
         0.2
       ]
     },
     {
-      "Linear": [
-        512,
-        256
-      ]
-    },
-    "ReLU",
-    {
-      "LayerNorm": [256]
-    },
-    {
-      "Dropout": [
+      "TemporalConv": [
+        96,
+        128,
+        3,
+        1,
+        8,
         0.2
       ]
     },
     {
-      "Linear": [
-        256,
-        128
+      "AdaptiveAvgPool1d": [
+        1
       ]
     },
-    "ReLU",
     {
-      "LayerNorm": [128]
-    },
-    {
-      "Dropout": [
-        0.2
+      "Flatten": [
+        1
       ]
     },
     {
       "Linear": [
         128,
-        512
+        64
       ]
     },
-    "ReLU",
     {
-      "LayerNorm": [512]
+      "ReLU": []
     },
     {
       "Dropout": [
-        0.2
+        0.3
       ]
     },
     {
       "Linear": [
-        512,
-        1024
-      ]
-    },
-    "ReLU",
-    {
-      "LayerNorm": [1024]
-    },
-    {
-      "Dropout": [
-        0.2
-      ]
-    },
-    {
-      "Linear": [
-        1024, 12
+        64,
+        12
       ]
     }
   ],
-  "window_size": 40,
-  "model_name": "Plant",
+  "batch_size": 32,
+  "window_size": 5,
+  "model_name": "TemporalMPC",
   "model_save_dir": "src/deltabot_nn_controller/model_zoo/models/model_states",
   "logging_dir": "logs",
   "seed": 42,
@@ -179,7 +141,6 @@
   "data_dir": "data/pvt_to_dac_training.h5",
   "train_ratio": 0.8,
   "validation_ratio": 0.1,
-  "batch_size": 8192,
   "max_epochs": 5000,
   "patience": 200,
   "min_delta": 1e-4,

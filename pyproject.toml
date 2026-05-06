@@ -17,6 +17,7 @@ dependencies = [
     "matplotlib",
     "h5py",
     "pandas",
+    "prompt_toolkit",
     "typer",
 ] # Add project dependencies here, e.g. ["click", "numpy"]
 dynamic = ["version"]

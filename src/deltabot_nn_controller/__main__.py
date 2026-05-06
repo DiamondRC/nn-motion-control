@@ -22,7 +22,7 @@ def version_callback(value):
 @cli.command()
 def model(
     model_cfg_pth: str = typer.Argument(
-        default="src/deltabot_nn_controller/model_zoo/plant_mlp.json",
+        default="src/deltabot_nn_controller/model_zoo/temporal_conv.json",
         help="A relative path to the model run config json",
         exists=True,
         dir_okay=True,
