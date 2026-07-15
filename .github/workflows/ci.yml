@@ -2,48 +2,95 @@ name: CI
 
 on:
   push:
-    branches:
-      - main
-    tags:
-      - '*'
+    branches: [main]
   pull_request:
 
+# A newer push to the same branch/PR cancels an in-progress run.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # PyTorch is deliberately NOT a declared dependency: the dev container gets it from
+  # the NVIDIA base image. CI installs the CPU-only wheel explicitly for the jobs that
+  # need torch, leaving the container/lockfile untouched.
+  TORCH_CPU_INDEX: https://download.pytorch.org/whl/cpu
+
 jobs:
-
+  # Lint + format (ruff) and JSON format (Prettier) and secret scan, via pre-commit.
   lint:
-    uses: ./.github/workflows/_tox.yml
-    with:
-      tox: pre-commit,type-checking
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v7
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Install pinned Prettier
+        run: npm ci
+      - name: Install tools
+        run: uv sync --locked
+      - name: pre-commit
+        run: uv run --no-sync pre-commit run --all-files --show-diff-on-failure
 
+  # Static type checking across the package and the test suite.
+  type:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0 # setuptools_scm derives the version from git history
+      - uses: astral-sh/setup-uv@v7
+      - run: uv sync --locked
+      - name: Install CPU PyTorch
+        run: uv pip install torch --index-url "$TORCH_CPU_INDEX"
+      - name: pyright
+        run: uv run --no-sync pyright src/nn_motion_control tests
+
+  # Hermetic test suite across supported Python versions.
   test:
+    runs-on: ubuntu-latest
     strategy:
-      matrix:
-        runs-on: ["ubuntu-latest"] # can add windows-latest, macos-latest
-        python-version: ["3.11", "3.12", "3.13"]
       fail-fast: false
-    uses: ./.github/workflows/_test.yml
-    with:
-      runs-on: ${{ matrix.runs-on }}
-      python-version: ${{ matrix.python-version }}
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    env:
+      UV_PYTHON: ${{ matrix.python-version }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v7
+      - run: uv sync --locked
+      - name: Install CPU PyTorch
+        run: uv pip install torch --index-url "$TORCH_CPU_INDEX"
+      - name: pytest
+        run: uv run --no-sync pytest --cov=nn_motion_control --cov-report=xml:cov.xml
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          files: cov.xml
+          name: py${{ matrix.python-version }}
+        # Best-effort: don't fail CI if Codecov is unavailable / unconfigured.
+        continue-on-error: true
 
+  # Documentation build. Autodoc imports the package, so torch is required.
   docs:
-    uses: ./.github/workflows/_docs.yml
-    permissions:
-      contents: write
-
-  dist:
-    uses: ./.github/workflows/_dist.yml
-  
-  pypi:
-    needs: [dist, test]
-    if: github.ref_type == 'tag'
-    uses: ./.github/workflows/_pypi.yml
-    permissions:
-      id-token: write
-  
-  release:
-    needs: [dist, test, docs]
-    if: github.ref_type == 'tag'
-    uses: ./.github/workflows/_release.yml
-    permissions:
-      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Install graphviz
+        run: sudo apt-get update && sudo apt-get install -y graphviz
+      - uses: astral-sh/setup-uv@v7
+      - run: uv sync --locked
+      - name: Install CPU PyTorch
+        run: uv pip install torch --index-url "$TORCH_CPU_INDEX"
+      - name: Build docs
+        run: uv run --no-sync sphinx-build --fail-on-warning --keep-going docs build/html
+      - name: Upload docs artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: docs
+          path: build/html

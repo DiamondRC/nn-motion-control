@@ -1,3 +1,6 @@
+# IDE-local config is not enforced.
+exclude: ^\.idea/
+
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v5.0.0
@@ -22,6 +25,13 @@ repos:
         language: system
         entry: ruff format --force-exclude
         types: [python]
+        require_serial: true
+
+      - id: prettier
+        name: format json with prettier
+        language: system
+        entry: npx --no-install prettier --write
+        types_or: [json]
         require_serial: true
 
       - id: uv-sync

@@ -2,7 +2,7 @@
 
 ..
    This page is not included in the TOC tree, but must exist so that the
-   autosummary pages are generated for deltabot_nn_controller and all its
+   autosummary pages are generated for nn_motion_control and all its
    subpackages
 
 API
@@ -13,4 +13,4 @@ API
     :template: custom-module-template.rst
     :recursive:
 
-    deltabot_nn_controller
+    nn_motion_control

@@ -3,7 +3,7 @@ requires = ["setuptools>=64", "setuptools_scm[toml]>=8"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "deltabot-nn-controller"
+name = "nn-motion-control"
 classifiers = [
     "Development Status :: 3 - Alpha",
     "License :: OSI Approved :: Apache Software License",
@@ -35,6 +35,7 @@ requires-python = ">=3.11"
 [dependency-groups]
 dev = [
     "copier",
+    "hypothesis",
     "myst-parser",
     "pre-commit",
     "pydata-sphinx-theme>=0.12",
@@ -50,17 +51,17 @@ dev = [
 ]
 
 [project.scripts]
-deltabot-nn-controller = "deltabot_nn_controller.__main__:cli"
+nn-motion-control = "nn_motion_control.__main__:cli"
 
 [project.urls]
-GitHub = "https://github.com/DiamondRC/deltabot-nn-controller"
+GitHub = "https://github.com/DiamondRC/nn-motion-control"
 
 [[project.authors]] # Further authors may be added by duplicating this section
 email = "richard.cunningham@diamond.ac.uk"
 name = "Richard Cunningham"
 
 [tool.setuptools_scm]
-version_file = "src/deltabot_nn_controller/_version.py"
+version_file = "src/nn_motion_control/_version.py"
 
 [tool.pyright]
 typeCheckingMode = "standard"
@@ -78,7 +79,21 @@ testpaths = "docs src tests"
 
 [tool.coverage.run]
 patch = ["subprocess"]
-data_file = "/tmp/deltabot_nn_controller.coverage"
+data_file = "/tmp/nn_motion_control.coverage"
+# Gate coverage on the *logic* modules; orchestration/glue is intentionally untested
+# (see the testing philosophy in the test suite / CLAUDE.md).
+omit = [
+    "*/training/trainer.py",
+    "*/training/run.py",
+    "*/training/logging_setup.py",
+    "*/data/loaders.py",
+    "*/eval/evaluate.py",
+    "*/__main__.py",
+]
+
+[tool.coverage.report]
+show_missing = true
+fail_under = 90
 
 [tool.coverage.paths]
 # Tests are run from installed location, map back to the src directory
@@ -125,7 +140,7 @@ description = "Run tests with coverage"
 commands = [
     [
         "pytest",
-        "--cov=deltabot_nn_controller",
+        "--cov=nn_motion_control",
         "--cov-report",
         "term",
         "--cov-report",

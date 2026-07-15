@@ -1,0 +1,12 @@
+# Generated / vendored / data — not hand-authored JSON
+node_modules/
+data/
+runs/
+logs/
+archive/
+build/
+**/*.egg-info/
+src/**/_version.py
+examples/*/data/
+examples/*/runs/
+.copier-answers.yml

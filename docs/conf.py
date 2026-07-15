@@ -11,15 +11,15 @@ from subprocess import check_output
 
 import requests
 
-import deltabot_nn_controller
+import nn_motion_control
 
 # -- General configuration ------------------------------------------------
 
 # General information about the project.
-project = "deltabot-nn-controller"
+project = "nn-motion-control"
 
 # The full version, including alpha/beta/rc tags.
-release = deltabot_nn_controller.__version__
+release = nn_motion_control.__version__
 
 # The short X.Y version.
 if "+" in release:
@@ -128,7 +128,7 @@ copybutton_prompt_is_regexp = True
 # a list of builtin themes.
 #
 html_theme = "pydata_sphinx_theme"
-github_repo = "deltabot-nn-controller"
+github_repo = "nn-motion-control"
 github_user = "DiamondRC"
 switcher_json = f"https://{github_user}.github.io/{github_repo}/switcher.json"
 switcher_exists = requests.get(switcher_json).ok

@@ -1,0 +1,60 @@
+# SystemSpec for the deltabot motion stage.
+#
+# Per-axis fields may be a single broadcast value or a per-axis table; both normalise
+# to per-axis internally. `label` maps each channel onto its dataset column name(s)
+# (these abbreviations are the legacy dataset labels; the default is "{axis}_{name}").
+
+name = "deltabot"
+axes = ["x", "y", "z"]
+servo_rate_hz = 200_000
+
+[target]
+board = "xc7z030"
+clock_hz = 125_000_000
+
+[channels.position]
+kind       = "measured"
+unit       = "m"
+per_axis   = true
+label      = "{axis}_pos"
+limits     = [-0.004, 0.004]
+resolution = 0.256e-9 # Interferometer
+
+[channels.position.noise_rms]
+x = 0.0
+y = 0.0
+z = 0.0
+
+[channels.velocity]
+kind  = "derived"
+from  = "position"
+order = 1
+label = "{axis}_vel"
+
+[channels.acceleration]
+kind  = "derived"
+from  = "position"
+order = 2
+label = "{axis}_acc"
+
+[channels.jerk]
+kind  = "derived"
+from  = "position"
+order = 3
+label = "{axis}_jer"
+
+[channels.dac]
+kind     = "command"
+unit     = "V"
+per_axis = true
+label    = "{axis}_DAC_real"
+
+[channels.dac.range]           # per-axis physical DAC range
+x = [-8.0, 8.0]
+y = [-8.0, 8.0]
+z = [-8.0, 8.0]
+
+[channels.dac.safe_range]      # per-axis safety clamp on controller output
+x = [-8.0, 8.0]                # tighten per axis once safe envelopes are known
+y = [-8.0, 8.0]
+z = [-8.0, 8.0]

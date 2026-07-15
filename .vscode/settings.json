@@ -1,13 +1,22 @@
 {
-    "python.testing.unittestEnabled": false,
-    "python.testing.pytestEnabled": true,
-    "editor.formatOnSave": true,
-    "editor.codeActionsOnSave": {
-        "source.organizeImports": "explicit"
-    },
-    "files.insertFinalNewline": true,
-    "[python]": {
-        "editor.defaultFormatter": "charliermarsh.ruff",
-    },
-    "python-envs.defaultEnvManager": "ms-python.python:venv",
+  "python.testing.unittestEnabled": false,
+  "python.testing.pytestEnabled": true,
+  "editor.formatOnSave": true,
+  "editor.codeActionsOnSave": {
+    "source.organizeImports": "explicit"
+  },
+  "files.insertFinalNewline": true,
+  "[python]": {
+    "editor.defaultFormatter": "charliermarsh.ruff"
+  },
+  "[json]": {
+    // Prettier keeps short arrays/objects on one line (unlike the built-in
+    // formatter, which explodes every element onto its own line), so the compact
+    // model-architecture specs survive. Needs the esbenp.prettier-vscode extension.
+    "editor.defaultFormatter": "esbenp.prettier-vscode"
+  },
+  "[jsonc]": {
+    "editor.defaultFormatter": "esbenp.prettier-vscode"
+  },
+  "python-envs.defaultEnvManager": "ms-python.python:venv"
 }

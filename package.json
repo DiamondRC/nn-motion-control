@@ -1,0 +1,13 @@
+{
+  "name": "nn-motion-control-tooling",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Dev-only JS tooling (Prettier for JSON configs). Not part of the Python package.",
+  "devDependencies": {
+    "prettier": "^3.4.2"
+  },
+  "scripts": {
+    "format": "prettier --write \"**/*.json\"",
+    "check-format": "prettier --check \"**/*.json\""
+  }
+}

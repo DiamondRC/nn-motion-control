@@ -70,11 +70,24 @@ lockfiles/
 # ruff cache
 .ruff_cache/
 
-# ML data
+# ML data / run artifacts
+# Anchor these so they match real data/run dirs, not the `data/` source package
+# (an unanchored `data/` would swallow src/nn_motion_control/data/).
 archive/
-data/
+/data/
+/runs/
+examples/*/data/
+examples/*/runs/
 *.pth
+*.h5
 logs/
+
+# Node (dev tooling: Prettier)
+node_modules/
 
 # temp
 actor_critic.py
+
+# Claude
+HANDOFF.md
+MILESTONES.md

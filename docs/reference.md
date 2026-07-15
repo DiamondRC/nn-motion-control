@@ -6,7 +6,7 @@ Technical reference material including APIs and release notes.
 :maxdepth: 1
 :glob:
 
-API <_api/deltabot_nn_controller>
+API <_api/nn_motion_control>
 genindex
-Release Notes <https://github.com/DiamondRC/deltabot-nn-controller/releases>
+Release Notes <https://github.com/DiamondRC/nn-motion-control/releases>
 ```
