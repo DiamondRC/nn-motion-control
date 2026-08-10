@@ -3,38 +3,35 @@
   "role": "plant",
   "model_name": "deltabot_plant_tcn",
   "architecture": {
-    "window_size": 10,
+    "window_size": 64,
     "hidden_layers": [
-      { "TemporalConv": [15, 128, 3, 1, 1, 0.2] },
-      { "TemporalConv": [128, 1024, 3, 1, 2, 0.2] },
-      { "TemporalConv": [1024, 8192, 3, 1, 4, 0.2] },
-      { "TemporalConv": [8192, 16384, 3, 1, 8, 0.2] },
+      { "TemporalConv": [9, 64, 3, 1, 1, 0.1] },
+      { "TemporalConv": [64, 64, 3, 1, 2, 0.1] },
+      { "TemporalConv": [64, 64, 3, 1, 4, 0.1] },
+      { "TemporalConv": [64, 64, 3, 1, 8, 0.1] },
+      { "TemporalConv": [64, 64, 3, 1, 16, 0.1] },
       { "AdaptiveAvgPool1d": [1] },
       { "Flatten": [1] },
-      { "Linear": [16384, 1024] },
+      { "Linear": [64, 128] },
       "ReLU",
-      { "Dropout": [0.3] },
-      { "Linear": [1024, 12] }
+      { "Linear": [128, 3] }
     ]
   },
-  "inputs": ["position", "velocity", "acceleration", "jerk", "dac"],
+  "inputs": ["position", "velocity", "dac"],
   "targets": {
-    "position": { "predict": "next", "weight": 1 },
-    "velocity": { "predict": "next", "weight": 50 },
-    "acceleration": { "predict": "next", "weight": 5 },
-    "jerk": { "predict": "next", "weight": 1 }
+    "position": { "form": "delta", "weight": 1 }
   },
   "data": "../data/plant_dataset.h5",
   "training": {
     "batch_size": 8192,
-    "max_epochs": 5000,
-    "patience": 200,
-    "min_delta": 1e-4,
+    "max_epochs": 2000,
+    "patience": 100,
+    "min_delta": 1e-5,
     "learning_rate": 3e-4,
     "optimiser": "AdamW",
     "grad_scaler": "GradScaler",
     "loss_function": "WeightedMSELoss",
-    "training_dtype": "float32",
+    "training_dtype": "bfloat16",
     "accumulation_steps": 1,
     "train_ratio": 0.8,
     "validation_ratio": 0.1,

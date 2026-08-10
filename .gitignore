@@ -78,6 +78,7 @@ archive/
 /runs/
 examples/*/data/
 examples/*/runs/
+examples/*/reports/
 *.pth
 *.h5
 logs/

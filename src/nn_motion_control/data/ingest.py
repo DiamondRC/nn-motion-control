@@ -6,6 +6,10 @@ Each raw text file recording is parsed into aligned (state, next-state) rows:
  - DAC demands are shifted by one step so DAC[i] is the demand that produced pos[i]
  - Velocity/acceleration/jerk are derived by successive finite differences.
 
+Targets are stored in two forms so an artifact config can select either: the absolute
+next state (``*_nxt``) and the change from the current step
+(``*_delta`` = next - current).
+
 The rows from every file are concatenated into one HDF5 file that stores raw
 (un-normalised) features plus per-file boundary and provenance metadata.
 
@@ -84,21 +88,25 @@ INPUT_LABELS = [
     "z_DAC_real",
 ]
 
-TARGET_LABELS = [
-    "timestep_nxt",
-    "x_pos_nxt",
-    "x_vel_nxt",
-    "x_acc_nxt",
-    "x_jer_nxt",
-    "y_pos_nxt",
-    "y_vel_nxt",
-    "y_acc_nxt",
-    "y_jer_nxt",
-    "z_pos_nxt",
-    "z_vel_nxt",
-    "z_acc_nxt",
-    "z_jer_nxt",
+# Per-axis state channels a plant can predict.
+STATE_LABELS = [
+    "x_pos",
+    "x_vel",
+    "x_acc",
+    "x_jer",
+    "y_pos",
+    "y_vel",
+    "y_acc",
+    "y_jer",
+    "z_pos",
+    "z_vel",
+    "z_acc",
+    "z_jer",
 ]
+
+NXT_LABELS = ["timestep_nxt", *(f"{c}_nxt" for c in STATE_LABELS)]
+DELTA_LABELS = [f"{c}_delta" for c in STATE_LABELS]
+TARGET_LABELS = [*NXT_LABELS, *DELTA_LABELS]
 
 # Rows lost per file during alignment:
 # 1 (DAC shift) + 3 (V/A/J warm-up) + 1 (next-state).
@@ -224,11 +232,14 @@ def parse_raw_file(path: Path, storage_dtype: np.dtype) -> FileResult:
         df[f"{axis}_jer"] = pvaj["jer"][i]
     df = df.iloc[3:].reset_index(drop=True)
 
-    # Next-state targets via a -1 shift
-    # The final row loses its target and is dropped explicitly.
-    for out_label in TARGET_LABELS:
-        base_label = out_label.replace("_nxt", "")
-        df[out_label] = df[base_label].shift(-1)
+    # Absolute next-state targets via a -1 shift (timestep + every state channel).
+    for base_label in ("timestep", *STATE_LABELS):
+        df[f"{base_label}_nxt"] = df[base_label].shift(-1)
+    # Delta targets: next - current. The tiny per-step change becomes a zero-centred,
+    # well-conditioned target; absolute state is recovered as current + delta.
+    for base_label in STATE_LABELS:
+        df[f"{base_label}_delta"] = df[f"{base_label}_nxt"] - df[base_label]
+    # The final row lost its next-state (and hence its delta); drop it explicitly.
     df = df.iloc[:-1].reset_index(drop=True)
 
     n_out = len(df)

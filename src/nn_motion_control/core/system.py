@@ -68,6 +68,7 @@ class SystemSpec:
     name: str
     axes: list[str]
     servo_rate_hz: float | None
+    data_rate_hz: float | None
     board: str | None
     clock_hz: float | None
     channels: dict[str, ChannelSpec]
@@ -101,6 +102,7 @@ class SystemSpec:
             name=raw["name"],
             axes=axes,
             servo_rate_hz=raw.get("servo_rate_hz") or None,
+            data_rate_hz=raw.get("data_rate_hz") or None,
             board=target.get("board"),
             clock_hz=target.get("clock_hz"),
             channels=channels,
@@ -135,6 +137,20 @@ class SystemSpec:
 
         if self.clock_hz and self.servo_rate_hz:
             return self.clock_hz / self.servo_rate_hz
+        return None
+
+    def control_substeps(self) -> float | None:
+        """
+        Control steps per data step, if both rates are known.
+
+        The plant is identified at ``data_rate_hz`` (the native rate of the logs),
+        while the controller runs at ``servo_rate_hz``. The ratio is how many
+        control decisions occur within a single plant-observable transition — the
+        deployment-time reconciliation of the two rates is an M2 concern.
+        """
+
+        if self.servo_rate_hz and self.data_rate_hz:
+            return self.servo_rate_hz / self.data_rate_hz
         return None
 
 

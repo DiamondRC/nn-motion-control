@@ -1,6 +1,6 @@
 """Model build-path tests (Workstream D).
 
-Ensures string activations are not silently dropped, LayerNorm is registered, and the
+Ensures string activations are not silently dropped, LayerNorm is registered and the
 windowed-Linear construction is correct. The shipped TCN config is ~1.6 B params, so we
 exercise the temporal path with a small inline config instead of instantiating it.
 """

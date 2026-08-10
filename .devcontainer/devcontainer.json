@@ -82,14 +82,14 @@
       "target": "/user-terminal-config",
       "type": "bind"
     },
-    // Keep a persistent cross container cache for uv, pre-commit, and the venvs
+    // Keep a persistent cross container cache for uv, pre-commit and the venvs
     {
       "source": "devcontainer-shared-cache",
       "target": "/cache",
       "type": "volume"
     },
     // Persist Claude Code's config dir (CLAUDE_CONFIG_DIR) so the auth token,
-    // session transcripts, and memory survive rebuilds. Uses a HOST BIND
+    // session transcripts and memory survive rebuilds. Uses a HOST BIND
     // MOUNT (not a named volume): on this box the Docker volume store lives
     // on ephemeral scratch and is wiped on rebuild, whereas the host home dir
     // is persistent. Same durable pattern as the terminal-config bind above.

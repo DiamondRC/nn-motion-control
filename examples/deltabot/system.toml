@@ -6,7 +6,11 @@
 
 name = "deltabot"
 axes = ["x", "y", "z"]
-servo_rate_hz = 200_000
+servo_rate_hz = 200_000 # Controller (deployment) rate
+data_rate_hz  = 10_000  # Rate the logs were captured at (100 us/sample); plant identified here
+
+# servo_rate_hz / data_rate_hz = 20 control steps per plant transition ("twenty chances").
+# How a 200 kHz controller drives a 10 kHz-identified plant is an M2 design question.
 
 [target]
 board = "xc7z030"

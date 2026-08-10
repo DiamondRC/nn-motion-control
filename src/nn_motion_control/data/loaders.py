@@ -21,6 +21,10 @@ from nn_motion_control.data.dataset import (
     H5TimeSeriesDataset,
     SubsetDataset,
 )
+from nn_motion_control.data.device_loader import (
+    DeviceWindowLoader,
+    RolloutWindowLoader,
+)
 from nn_motion_control.data.splits import (
     build_valid_window_starts,
     split_window_starts_contiguous,
@@ -29,6 +33,11 @@ from nn_motion_control.data.splits import (
 
 logger = logging.getLogger(os.path.basename(__file__))
 
+# Loader types that satisfy the trainer/evaluator contract (iterate batches + len +
+# a dataset with the window count). RolloutWindowLoader yields 3-tuples consumed by
+# RolloutTrainer; the others yield (x, y).
+BatchLoader = DataLoader | DeviceWindowLoader | RolloutWindowLoader
+
 
 @dataclass(frozen=True)
 class AllDataInfo:
@@ -36,9 +45,9 @@ class AllDataInfo:
     The three dataloaders plus the metadata needed for inference/denormalisation.
     """
 
-    trn_loader: DataLoader
-    val_loader: DataLoader
-    tst_loader: DataLoader
+    trn_loader: BatchLoader
+    val_loader: BatchLoader
+    tst_loader: BatchLoader
     node_info: DatasetMetadata
 
 
@@ -60,6 +69,7 @@ def build_time_series_splits(
     pin_memory: bool = True,
     auto_tune_workers: bool = True,
     enable_logging: bool = False,
+    device: str = "cpu",
 ) -> AllDataInfo:
     """
     Create boundary-aware, leakage-free train/val/test splits.
@@ -120,21 +130,142 @@ def build_time_series_splits(
             window_size,
         )
 
-    trn_loader, val_loader, tst_loader = make_dataloaders(
-        dataset=dataset,
-        train_idx=train_idx,
-        val_idx=val_idx,
-        test_idx=test_idx,
-        batch_size=batch_size,
-        num_workers=num_workers,
-        prefetch_factor=prefetch_factor,
-        persistent_workers=persistent_workers,
-        pin_memory=pin_memory,
-        shuffle_train=True,
-        seed=seed,
-        enable_logging=enable_logging,
-    )
+    if load_into_ram:
+        # Fast path: hold the normalised tensors on ``device`` and gather each
+        # batch's windows in one vectorised op (no per-item Python, no per-batch copy).
+        trn_loader, val_loader, tst_loader = make_device_loaders(
+            dataset=dataset,
+            train_idx=train_idx,
+            val_idx=val_idx,
+            test_idx=test_idx,
+            window_size=window_size,
+            batch_size=batch_size,
+            seed=seed,
+            device=device,
+        )
+    else:
+        # Fallback: stream windows from disk one item at a time.
+        trn_loader, val_loader, tst_loader = make_dataloaders(
+            dataset=dataset,
+            train_idx=train_idx,
+            val_idx=val_idx,
+            test_idx=test_idx,
+            batch_size=batch_size,
+            num_workers=num_workers,
+            prefetch_factor=prefetch_factor,
+            persistent_workers=persistent_workers,
+            pin_memory=pin_memory,
+            shuffle_train=True,
+            seed=seed,
+            enable_logging=enable_logging,
+        )
     return AllDataInfo(trn_loader, val_loader, tst_loader, node_info=dataset.meta)
+
+
+def make_device_loaders(
+    dataset: H5TimeSeriesDataset,
+    train_idx: np.ndarray,
+    val_idx: np.ndarray,
+    test_idx: np.ndarray,
+    window_size: int,
+    batch_size: int,
+    seed: int,
+    device: str,
+) -> tuple[DeviceWindowLoader, DeviceWindowLoader, DeviceWindowLoader]:
+    """
+    Build device-resident, vectorised window loaders sharing one normalised tensor.
+    """
+
+    inputs, targets = dataset.normalized_arrays(device)
+
+    def _make(idx: np.ndarray, shuffle: bool) -> DeviceWindowLoader:
+        return DeviceWindowLoader(
+            inputs,
+            targets,
+            DeviceWindowLoader.starts_to_device(idx, device),
+            window_size=window_size,
+            batch_size=batch_size,
+            shuffle=shuffle,
+            seed=seed,
+            device=device,
+        )
+
+    return _make(train_idx, True), _make(val_idx, False), _make(test_idx, False)
+
+
+def build_rollout_splits(
+    h5_path: str,
+    allowed_inputs: Sequence[str],
+    allowed_targets: Sequence[Mapping[str, float]],
+    window_size: int,
+    max_horizon: int,
+    pos_cols: list[int],
+    dac_cols: list[int],
+    train_ratio: float,
+    val_ratio: float,
+    training_dtype: torch.dtype,
+    batch_size: int,
+    seed: int = 42,
+    device: str = "cpu",
+    train_start_stride: int = 1,
+    val_start_stride: int = 1,
+    drop_last: bool = False,
+) -> AllDataInfo:
+    """
+    Build leakage-aware rollout splits as RolloutWindowLoaders on the device.
+
+    All three loaders share one normalised input tensor; W + max_horizon rows are
+    reserved at each recording tail and split seam so no rollout crosses a boundary or
+    leaks across splits. Normalisation is fit on the train rows only.
+
+    ``train_start_stride`` / ``val_start_stride`` subsample the window starts (adjacent
+    rollout windows overlap in all but one warmup and one horizon row, so they are
+    highly redundant); normalisation is still fit on the full train rows. ``drop_last``
+    drops the ragged final batch so a compiled rollout step sees a constant batch shape.
+    """
+
+    ensure_enough_ram(h5_path)
+    dataset = H5TimeSeriesDataset(
+        h5_path=h5_path,
+        allowed_inputs=allowed_inputs,
+        allowed_targets=allowed_targets,
+        window_size=window_size,
+        load_into_ram=True,
+        dtype=training_dtype,
+    )
+    valid = build_valid_window_starts(
+        dataset.segment_offsets, window_size, horizon=max_horizon
+    )
+    train_idx, val_idx, test_idx = split_window_starts_contiguous(
+        valid, train_ratio, val_ratio, window_size, horizon=max_horizon
+    )
+    # Fit normalisation on the full (unstrided) train rows for the best stats, then
+    # subsample the starts each loader actually iterates.
+    dataset.fit_normalization(train_idx, "contiguous")
+    assert dataset.meta is not None
+    inputs, _ = dataset.normalized_arrays(device)  # rollout reads state/dac from inputs
+
+    def mk(idx: np.ndarray, shuffle: bool, stride: int = 1) -> RolloutWindowLoader:
+        return RolloutWindowLoader(
+            inputs,
+            DeviceWindowLoader.starts_to_device(idx[::stride], device),
+            window_size,
+            max_horizon,
+            batch_size,
+            pos_cols,
+            dac_cols,
+            shuffle=shuffle,
+            seed=seed,
+            device=device,
+            drop_last=drop_last,
+        )
+
+    return AllDataInfo(
+        mk(train_idx, True, train_start_stride),
+        mk(val_idx, False, val_start_stride),
+        mk(test_idx, False),
+        node_info=dataset.meta,
+    )
 
 
 def setup_workers(

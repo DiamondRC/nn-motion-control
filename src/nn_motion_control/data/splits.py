@@ -35,33 +35,36 @@ def validate_labels(
 
 
 def build_valid_window_starts(
-    segment_offsets: np.ndarray, window_size: int
+    segment_offsets: np.ndarray, window_size: int, horizon: int = 0
 ) -> np.ndarray:
     """
     Return every row that can start a full window within a single recording.
 
     Segment ``k`` spans rows ``[segment_offsets[k], segment_offsets[k+1])``; a window
     starting at ``s`` occupies ``[s, s + window_size)`` and must stay inside that span,
-    so no window ever straddles two recordings.
+    so no window ever straddles two recordings. For a rollout of ``horizon`` future
+    steps the sample also reads rows ``[s + window_size, s + window_size + horizon)``,
+    so ``horizon`` extra rows are reserved at the tail of each recording.
     """
 
+    reserve = window_size + horizon
     starts: list[np.ndarray] = []
     for k in range(len(segment_offsets) - 1):
         s = int(segment_offsets[k])
         e = int(segment_offsets[k + 1])
-        last_start = e - window_size  # inclusive
+        last_start = e - reserve  # inclusive
         if last_start >= s:
             starts.append(np.arange(s, last_start + 1, dtype=np.int64))
         else:
             logger.warning(
-                "Segment %d (length %d) is shorter than window_size=%d; skipped",
+                "Segment %d (length %d) is shorter than window+horizon=%d; skipped",
                 k,
                 e - s,
-                window_size,
+                reserve,
             )
 
     if not starts:
-        raise ValueError(f"No recording is long enough for window_size={window_size}")
+        raise ValueError(f"No recording is long enough for window+horizon={reserve}")
     return np.concatenate(starts)
 
 
@@ -79,13 +82,14 @@ def split_window_starts_contiguous(
     train_ratio: float,
     val_ratio: float,
     window_size: int,
+    horizon: int = 0,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Contiguous split of ordered window starts with a leakage gap at each seam.
 
-    After the ratio split, the last ``window_size - 1`` starts of train and of val are
-    dropped so a training window's target row cannot reach into the validation range
-    (and val cannot reach into test).
+    After the ratio split, the last ``window_size + horizon - 1`` starts of train and
+    of val are dropped so a training sample's furthest-reached row (target, or the last
+    rollout step) cannot fall into the validation range (and val cannot reach test).
     """
 
     _validate_ratios(train_ratio, val_ratio)
@@ -100,7 +104,7 @@ def split_window_starts_contiguous(
     val_idx = valid_starts[train_end:val_end]
     test_idx = valid_starts[val_end:]
 
-    gap = window_size - 1
+    gap = window_size + horizon - 1
     if gap > 0:
         train_idx = train_idx[:-gap] if len(train_idx) > gap else train_idx[:0]
         val_idx = val_idx[:-gap] if len(val_idx) > gap else val_idx[:0]

@@ -18,6 +18,8 @@ def test_loads_deltabot_spec():
     assert spec.axes == ["x", "y", "z"]
     assert spec.board == "xc7z030"
     assert spec.clock_hz == 125_000_000
+    assert spec.servo_rate_hz == 200_000
+    assert spec.data_rate_hz == 10_000
 
 
 def test_broadcast_field_fans_out_to_all_axes():
@@ -99,6 +101,18 @@ def test_clocks_per_step():
         }
     )
     assert spec2.clocks_per_step() is None
+
+
+def test_control_substeps():
+    # deltabot: 200 kHz control rate / 10 kHz data rate = 20 control steps per
+    # plant transition ("twenty chances").
+    spec = SystemSpec.from_toml(DELTABOT)
+    assert spec.control_substeps() == 20.0
+    # None when either rate is missing.
+    spec2 = SystemSpec.from_dict(
+        {"name": "s", "axes": ["x"], "servo_rate_hz": 200_000, "channels": {}}
+    )
+    assert spec2.control_substeps() is None
 
 
 def test_unknown_channel_raises():

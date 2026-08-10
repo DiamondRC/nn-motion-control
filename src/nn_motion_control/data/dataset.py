@@ -178,6 +178,25 @@ class H5TimeSeriesDataset(Dataset):
 
         self.meta = self._build_meta(input_stats, target_stats)
 
+    def normalized_arrays(
+        self, device: str = "cpu"
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Return the fully normalised ``(inputs, targets)`` tensors on ``device``.
+
+        Applies the fitted z-score to the RAM-resident columns once, so a batched
+        loader can gather windows without per-item normalisation. Requires
+        ``load_into_ram`` and a prior ``fit_normalization``.
+        """
+
+        if self._inputs is None or self._targets is None:
+            raise RuntimeError("normalized_arrays requires load_into_ram=True")
+        if self.meta is None:
+            raise RuntimeError("call fit_normalization before normalized_arrays")
+        x = (self._inputs - self._in_mean) / self._in_std
+        y = (self._targets - self._tgt_mean) / self._tgt_std
+        return x.to(device), y.to(device)
+
     def _build_meta(
         self, input_stats: NormStats, target_stats: NormStats
     ) -> DatasetMetadata:

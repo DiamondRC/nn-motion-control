@@ -1,13 +1,14 @@
 import json
 import logging
 import os
+import time
 from pathlib import Path
 
 import torch
 from torch import autocast
-from torch.utils.data import DataLoader
 
 from nn_motion_control.data.dataset import DatasetMetadata
+from nn_motion_control.data.loaders import BatchLoader
 
 logger = logging.getLogger(os.path.basename(__file__))
 
@@ -21,8 +22,8 @@ class Trainer:
     def __init__(
         self,
         model,
-        train_loader: DataLoader,
-        val_loader: DataLoader,
+        train_loader: BatchLoader,
+        val_loader: BatchLoader,
         device: str,
         scaler_class,
         optimizer_class,
@@ -44,7 +45,11 @@ class Trainer:
         self.train_loader = train_loader
         self.val_loader = val_loader
         self.device = device
-        self.scaler = scaler_class(device=self.device)
+        # Loss scaling is only needed for float16 (bf16 has fp32 range); disabling it
+        # for other dtypes keeps the step a no-op instead of rescaling needlessly.
+        self.scaler = scaler_class(
+            device=self.device, enabled=(training_dtype == torch.float16)
+        )
         self.num_epochs = max_epochs
         self.learning_rate = learning_rate
         self.min_delta = min_delta
@@ -74,8 +79,43 @@ class Trainer:
 
         self.train_losses = []
         self.val_losses = []
+        # Per-epoch profiling: train/val wall time and peak CUDA memory, so we can see
+        # how cost scales (e.g. with the rollout horizon curriculum) across a run.
+        self.epoch_train_times: list[float] = []
+        self.epoch_val_times: list[float] = []
+        self.epoch_peak_mem_gb: list[float] = []
         self.stopped_early = 0
         self.test_results = {}
+
+    def _forward_loss(self, batch):
+        """
+        Compute the loss for one batch (one-step prediction).
+
+        Subclasses override this to change the per-batch objective; the surrounding
+        AMP, gradient accumulation, clipping and early stopping are shared.
+        """
+
+        data, labels = batch[0], batch[1]
+        data = data.to(self.device, non_blocking=True)
+        labels = labels.to(self.device, non_blocking=True)
+        outputs = self.model(data)
+        return self.criterion(outputs, labels)
+
+    def _on_epoch_start(self, epoch: int) -> None:
+        """
+        Per-epoch setup hook. No-op for one-step; rollout uses it for its schedules.
+        """
+
+    def _is_improvement(self, val_loss: float, best_val_loss: float) -> bool:
+        """
+        Whether val_loss beats the best by the min_delta margin.
+
+        min_delta is a relative fraction of the current best, so the check is robust
+        across loss magnitudes. An absolute margin mis-scaled to the loss (e.g. 1e-6
+        against a ~1e-5 loss) can otherwise never trigger, freezing the best on epoch 1.
+        """
+
+        return val_loss < best_val_loss * (1.0 - self.min_delta)
 
     def _train_epoch(self):
         """
@@ -92,22 +132,15 @@ class Trainer:
         counted_batches = 0  # non-skipped batches actually contributing to the mean
 
         # Iterate over all training batches
-        for batch_idx, (data, labels) in enumerate(self.train_loader):
+        for batch_idx, batch in enumerate(self.train_loader):
             # Zero gradients at the start of each accumulation cycle
             if (batch_idx % self.accumulation_steps) == 0:
                 self.optimizer.zero_grad(set_to_none=True)
 
-            # Async CPU->GPU data transfer
-            data, labels = (
-                data.to(self.device, non_blocking=True),
-                labels.to(self.device, non_blocking=True),
-            )
-
-            # Mixed precision context for later quantisation support
+            # Mixed precision context for later quantisation support. The per-batch
+            # forward and loss live in _forward_loss so subclasses can override them.
             with autocast(device_type=self.device, dtype=self.training_dtype):
-                outputs = self.model(data)
-                # The loss carries the per-target weight vector internally.
-                loss = self.criterion(outputs, labels) / self.accumulation_steps
+                loss = self._forward_loss(batch) / self.accumulation_steps
 
             # Guard against NaN/Inf loss which can destabilize training
             if torch.isnan(loss) or torch.isinf(loss):
@@ -147,16 +180,10 @@ class Trainer:
 
         # No gradient computation in validation
         with torch.no_grad():
-            for data, labels in self.val_loader:
-                data, labels = (
-                    data.to(self.device, non_blocking=True),
-                    labels.to(self.device, non_blocking=True),
-                )
-                # Check model against unseen data to monitor overfitting. Use the same
-                # dtype as training so val loss is comparable for early stopping.
+            for batch in self.val_loader:
+                # Same dtype as training so val loss is comparable for early stopping.
                 with autocast(device_type=self.device, dtype=self.training_dtype):
-                    outputs = self.model(data)
-                    loss = self.criterion(outputs, labels)
+                    loss = self._forward_loss(batch)
 
                 if torch.isnan(loss):
                     logger.warning("NaN in validation, skipping")
@@ -176,14 +203,19 @@ class Trainer:
         return self.train_losses, self.val_losses, self.stopped_early
 
     def _save_checkpoint(self):
-        """Save the model plus everything needed to run/denormalize it later.
+        """
+        Save the model plus everything needed to run/denormalize it later.
 
         Normalization is fit at train time (not stored in the dataset), so the fitted
         stats must travel with the weights or inference cannot recover physical units.
         """
+
         ni = self.node_info
+        # Unwrap a torch.compile wrapper so saved keys have no `_orig_mod.` prefix and
+        # the checkpoint loads into a plain module.
+        core_model = getattr(self.model, "_orig_mod", self.model)
         checkpoint = {
-            "model_state_dict": self.model.state_dict(),
+            "model_state_dict": core_model.state_dict(),
             "model_name": self.model_name,
             "window_size": self.window_size,
             "seed": self.seed,
@@ -237,21 +269,36 @@ class Trainer:
 
         for epoch in range(self.num_epochs):
             try:
+                self._on_epoch_start(epoch)
+                if self.device == "cuda":
+                    torch.cuda.reset_peak_memory_stats()
+                t0 = time.perf_counter()
                 train_loss = self._train_epoch()
+                t_train = time.perf_counter() - t0
+                t0 = time.perf_counter()
                 val_loss = self._validate_epoch()
+                t_val = time.perf_counter() - t0
+                peak_gb = (
+                    torch.cuda.max_memory_allocated() / 1e9
+                    if self.device == "cuda"
+                    else 0.0
+                )
 
-                # Store losses for future plotting
+                # Store losses + per-epoch profiling for plotting / cost analysis.
                 self.train_losses.append(train_loss)
                 self.val_losses.append(val_loss)
+                self.epoch_train_times.append(t_train)
+                self.epoch_val_times.append(t_val)
+                self.epoch_peak_mem_gb.append(peak_gb)
 
-                if epoch % 10 == 0 or epoch == self.num_epochs - 1:
-                    logger.info(
-                        f"Epoch {epoch + 1}/{self.num_epochs}, "
-                        f"Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}"
-                    )
+                logger.info(
+                    f"Epoch {epoch + 1}/{self.num_epochs} "
+                    f"({t_train:.1f}s train, {t_val:.1f}s val, {peak_gb:.1f} GB peak), "
+                    f"Train Loss: {train_loss:.3e}, Val Loss: {val_loss:.3e}"
+                )
 
                 # Early stopping check
-                if val_loss < best_val_loss - self.min_delta:
+                if self._is_improvement(val_loss, best_val_loss):
                     best_val_loss = val_loss
                     epochs_no_improve = 0
 
@@ -279,7 +326,7 @@ class Trainer:
                     self.val_losses.append(val_loss)
 
                     # Early stopping check
-                    if val_loss < best_val_loss - self.min_delta:
+                    if self._is_improvement(val_loss, best_val_loss):
                         best_val_loss = val_loss
                         epochs_no_improve = 0
 

@@ -17,8 +17,12 @@ from nn_motion_control.data.ingest import (
 )
 
 # The 15/12 features a model actually consumes (everything except the timestep index).
+# TARGETS_12 is the absolute next-state subset; the targets dataset also carries the
+# parallel `_delta` columns, which these fixtures do not exercise.
 INPUTS_15 = [lbl for lbl in INPUT_LABELS if lbl != "timestep"]
-TARGETS_12 = [lbl for lbl in TARGET_LABELS if lbl != "timestep_nxt"]
+TARGETS_12 = [
+    lbl for lbl in TARGET_LABELS if lbl.endswith("_nxt") and lbl != "timestep_nxt"
+]
 
 # The deltabot SystemSpec: its channel labels match the synthetic dataset's columns,
 # so the same spec drives both the real instance and the hermetic tests.

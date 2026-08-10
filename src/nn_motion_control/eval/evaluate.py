@@ -10,22 +10,34 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from torch import autocast
-from torch.utils.data import DataLoader
 
 from nn_motion_control.data.dataset import DatasetMetadata
+from nn_motion_control.data.loaders import BatchLoader
+from nn_motion_control.eval.metrics import DEFAULT_GATE, channel_metrics
 
 logger = logging.getLogger(os.path.basename(__file__))
 
 
+def to_flat_numpy(tensor: torch.Tensor) -> np.ndarray:
+    """
+    Flatten a tensor to a 1-D float32 numpy array.
+
+    The ``.float()`` is required: numpy has no bf16 dtype, so bf16/half tensors
+    (produced by autocast or bf16 configs) must be upcast before conversion.
+    """
+
+    return tensor.detach().float().cpu().flatten().numpy()
+
+
 class Evaluator:
     """
-    Load the best checkpoint, run the test split, and report denormalised metrics.
+    Load the best checkpoint, run the test split and report denormalised metrics.
     """
 
     def __init__(
         self,
         model,
-        test_loader: DataLoader,
+        test_loader: BatchLoader,
         training_losses,
         validation_losses,
         criterion_class,
@@ -75,18 +87,18 @@ class Evaluator:
 
         # Check best model on unseen test data to estimate real-world performance.
         with torch.no_grad():
-            for data, labels in self.test_loader:
+            for batch in self.test_loader:
                 data, labels = (
-                    data.to(self.device, non_blocking=True),
-                    labels.to(self.device, non_blocking=True),
+                    batch[0].to(self.device, non_blocking=True),
+                    batch[1].to(self.device, non_blocking=True),
                 )
                 with autocast(device_type=self.device, dtype=self.training_dtype):
                     outputs = self.model(data)
                     loss = self.criterion(outputs, labels)
                     total_loss += loss.item()
 
-                all_predictions.extend(outputs.float().cpu().flatten().numpy())
-                all_targets.extend(labels.cpu().flatten().numpy())
+                all_predictions.extend(to_flat_numpy(outputs))
+                all_targets.extend(to_flat_numpy(labels))
 
         self.avg_loss = total_loss / len(self.test_loader)
 
@@ -142,33 +154,10 @@ class Evaluator:
                 )
             logger.info(f"{separator}")
 
-        def _calculate_mae(pred, tar):
-            return np.mean(np.abs(pred - tar)).item()
-
-        def _calculate_rmse(pred, tar):
-            return np.sqrt(np.mean((pred - tar) ** 2)).item()
-
-        def _calculate_percentiles(pred, tar, ps=(95, 99)):
-            errs = np.sqrt((pred - tar) ** 2)
-            return {p: np.percentile(errs, p).item() for p in ps}
-
-        def _calculate_metrics(pred, tar, name):
-            mae = _calculate_mae(pred, tar)
-            rmse = _calculate_rmse(pred, tar)
-            abs_p = _calculate_percentiles(pred, tar)
-
-            logger.info(f"{name} 95% Abs Err: {abs_p[95]:.2f}%")
-            logger.info(f"{name} 99% Abs Err: {abs_p[99]:.2f}%")
-            logger.info(f"{name} MAE: {mae:.4f}")
-            logger.info(f"{name} RMSE: {rmse:.4f}")
-            logger.info(f"{separator}")
-
-        self.avg_mae = _calculate_mae(
-            self.all_predictions_denorm, self.all_targets_denorm
-        )
-        self.avg_rmse = _calculate_rmse(
-            self.all_predictions_denorm, self.all_targets_denorm
-        )
+        preds_all = self.all_predictions_denorm
+        targets_all = self.all_targets_denorm
+        self.avg_mae = float(np.mean(np.abs(preds_all - targets_all)))
+        self.avg_rmse = float(np.sqrt(np.mean((preds_all - targets_all) ** 2)))
 
         logger.info("Common metrics:")
         logger.info(f"{separator}")
@@ -176,19 +165,38 @@ class Evaluator:
         logger.info(f"Avg MAE: {self.avg_mae:.4f}")
         logger.info(f"Avg RMSE: {self.avg_rmse:.4f}")
 
+        # Per-channel metrics: absolute (physical units) plus std-normalised errors,
+        # with the acceptance gate (P95 |err| within 5% of the target's std; P99 tracks
+        # the tail).
+        self.channel_metrics = {
+            name: channel_metrics(name, preds_all[idx], targets_all[idx])
+            for idx, name in enumerate(self.data_labels)
+        }
+
         logger.info(f"{separator}")
-        logger.info("Variable specific metrics:")
+        gate_pct = DEFAULT_GATE * 100
+        logger.info(
+            f"Per-channel metrics (gate: P95 <= {gate_pct:.0f}% of std; P99 = tail):"
+        )
         logger.info(f"{separator}")
-        for idx, axis in enumerate(self.data_labels):
-            _calculate_metrics(
-                self.all_predictions_denorm[idx],
-                self.all_targets_denorm[idx],
-                axis,
+        for m in self.channel_metrics.values():
+            verdict = "PASS" if m.passes else "FAIL"
+            logger.info(
+                f"{m.name:>13} | MAE {m.mae:9.3f} RMSE {m.rmse:9.3f} | "
+                f"P95|e| {m.p95_abs:9.3f} P99|e| {m.p99_abs:9.3f} | "
+                f"P95 {m.p95_frac * 100:6.2f}% P99 {m.p99_frac * 100:6.2f}% | "
+                f"FIT {m.fit:6.2f}% | {verdict}"
             )
+        n_pass = sum(m.passes for m in self.channel_metrics.values())
+        logger.info(f"{separator}")
+        logger.info(
+            f"Acceptance gate (P95): {n_pass}/{len(self.channel_metrics)} channels "
+            f"within {gate_pct:.0f}%"
+        )
 
     def test(self):
         """
-        Load the best checkpoint, run the test split, and log metrics.
+        Load the best checkpoint, run the test split and log metrics.
         """
 
         # Checkpoints are bundles (weights + norm stats + provenance); tolerate a bare

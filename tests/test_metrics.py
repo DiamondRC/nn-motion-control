@@ -1,4 +1,4 @@
-"""Metrics/denorm tests (Workstream C): the reshape must map state k -> row k, and
+"""Metrics/denorm tests (Workstream C): the reshape must map state k -> row k and
 normalize/denormalize must round-trip.
 """
 
@@ -12,7 +12,9 @@ from nn_motion_control.data.ingest import (
 )
 
 INPUTS_15 = [lbl for lbl in INPUT_LABELS if lbl != "timestep"]
-TARGETS_12 = [lbl for lbl in TARGET_LABELS if lbl != "timestep_nxt"]
+TARGETS_12 = [
+    lbl for lbl in TARGET_LABELS if lbl.endswith("_nxt") and lbl != "timestep_nxt"
+]
 
 
 def test_reshape_maps_state_to_row():
@@ -48,5 +50,6 @@ def test_normalize_denormalize_roundtrip(synth_h5):
     row = int(train[0])
     _, y = ds[row]  # normalized target
     denorm = y.numpy() * tstd + tmean
-    raw = synth_h5["targets"][row, 1:]  # skip the timestep_nxt column
+    tgt_cols = [TARGET_LABELS.index(lbl) for lbl in TARGETS_12]
+    raw = synth_h5["targets"][row, tgt_cols]
     assert np.allclose(denorm, raw, atol=1e-2)

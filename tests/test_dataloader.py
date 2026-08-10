@@ -1,5 +1,5 @@
 """Dataloader correctness tests (Workstream B): boundaries, split gaps, train-only
-normalization, and correctly-aligned denorm params.
+normalization and correctly-aligned denorm params.
 """
 
 import h5py
@@ -16,7 +16,9 @@ from nn_motion_control.data.ingest import (
 )
 
 INPUTS_15 = [lbl for lbl in INPUT_LABELS if lbl != "timestep"]
-TARGETS_12 = [lbl for lbl in TARGET_LABELS if lbl != "timestep_nxt"]
+TARGETS_12 = [
+    lbl for lbl in TARGET_LABELS if lbl.endswith("_nxt") and lbl != "timestep_nxt"
+]
 
 WINDOW = 5
 

@@ -12,7 +12,7 @@ non-linear dynamics, then a compact **controller** trained against that model an
 deployed to an FPGA for real-time, nm-scale control.
 
 The framework is **instance-agnostic** — a motion system is described declaratively by a
-`SystemSpec`, and `examples/deltabot/` is the first reference instance (a 3-axis stage).
+`SystemSpec` and `examples/deltabot/` is the first reference instance (a 3-axis stage).
 
 > **Status:** early development; the plant → controller → FPGA-export pipeline is being
 > built up in milestones.

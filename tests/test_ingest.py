@@ -37,12 +37,34 @@ def test_build_dataset_alignment_and_schema(tmp_path):
         segoff = as_dataset(h, "segment_offsets")[:]
         assert segoff[0] == 0 and segoff[-1] == n
         assert len(as_dataset(h, "input_labels")) == 16
-        assert len(as_dataset(h, "target_labels")) == 13
+        # 13 absolute (`timestep_nxt` + 12 state `_nxt`) + 12 `_delta`.
+        assert len(as_dataset(h, "target_labels")) == 25
         assert "input_norm_params" not in h  # normalisation left the build step
         assert "target_norm_params" not in h
         assert np.isfinite(as_dataset(h, "inputs")[:]).all()
         assert np.isfinite(as_dataset(h, "targets")[:]).all()
         assert as_dataset(h, "file_position_offsets").shape == (2, 3)
+
+
+def test_delta_targets_equal_next_minus_current(tmp_path):
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    _write_raw(raw / "a.txt", n=40, seed=3)
+    out = tmp_path / "out.h5"
+
+    m.build_dataset(raw, out, storage_dtype=np.dtype("float64"))
+
+    with h5py.File(out, "r") as h:
+        in_labels = [s.decode() for s in as_dataset(h, "input_labels")[:]]
+        tg_labels = [s.decode() for s in as_dataset(h, "target_labels")[:]]
+        inputs = as_dataset(h, "inputs")[:]
+        targets = as_dataset(h, "targets")[:]
+
+    for state in m.STATE_LABELS:
+        cur = inputs[:, in_labels.index(state)]
+        nxt = targets[:, tg_labels.index(f"{state}_nxt")]
+        delta = targets[:, tg_labels.index(f"{state}_delta")]
+        assert np.allclose(delta, nxt - cur, rtol=0, atol=1e-9)
 
 
 def test_header_row_is_rejected(tmp_path):

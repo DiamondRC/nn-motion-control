@@ -59,17 +59,39 @@ class RunConfiguration:
     def _expand_targets(self, targets: dict[str, dict]) -> list[dict[str, float]]:
         """
         Expand target channels (axis-major) into a list of dicts.
+
+        Each target selects a prediction *form*, resolved to a dataset column suffix:
+        ``delta`` -> ``_delta`` (next - current) or ``absolute`` -> ``_nxt``. ``form``
+        defaults to ``delta``; the legacy ``predict: "next"`` key means ``absolute``.
         """
 
+        suffixes = {"delta": "_delta", "absolute": "_nxt"}
         out: list[dict[str, float]] = []
         for axis in self.system.axes:
             for name, spec in targets.items():
                 ch = self.system.channel(name)
                 label = ch.label(axis if ch.per_axis else None)
-                if spec.get("predict", "next") == "next":
-                    label = f"{label}_nxt"
-                out.append({label: spec.get("weight", 1)})
+                form = self._target_form(name, spec)
+                out.append({f"{label}{suffixes[form]}": spec.get("weight", 1)})
         return out
+
+    @staticmethod
+    def _target_form(name: str, spec: dict) -> str:
+        """
+        Resolve a target's prediction form ('delta' or 'absolute').
+        """
+
+        if "form" in spec:
+            form = spec["form"]
+            if form not in ("delta", "absolute"):
+                raise ValueError(
+                    f"Target '{name}': form must be 'delta' or 'absolute', got {form!r}"
+                )
+            return form
+        # Legacy: `predict: "next"` selected the absolute next-state column.
+        if spec.get("predict") == "next":
+            return "absolute"
+        return "delta"
 
     def _store_hyperparams(self) -> None:
         cfg = self.model_config
@@ -85,6 +107,13 @@ class RunConfiguration:
         self.logging_dir = out_dir
         self.seed = run.get("seed", 42)
         self.do_verb_log = run.get("verbose_logging", True)
+        # torch.compile the model for training (applied only on CUDA).
+        self.do_compile = run.get("compile", True)
+        # Optional rollout-training block; absent means one-step training.
+        self.rollout: dict[str, Any] | None = cfg.get("rollout")
+        # Optional checkpoint to initialise weights from (warm start / fine-tuning).
+        init = run.get("init_checkpoint")
+        self.init_checkpoint: str | None = self._resolve(init) if init else None
 
         # Data
         self.datafile_dir = self._resolve(cfg["data"])
@@ -102,6 +131,10 @@ class RunConfiguration:
         self.window_size = arch.get("window_size", 1)
         if self.window_size < 1:
             raise ValueError(f"{self.window_size=} must be >= 1")
+        # Channel names (roles) kept alongside the expanded labels: the rollout uses
+        # them to derive which columns are state/command from the SystemSpec.
+        self.input_channels = list(cfg["inputs"])
+        self.target_channels = list(cfg["targets"].keys())
         self.input_params = self.system.labels(cfg["inputs"])
         self.target_params = self._expand_targets(cfg["targets"])
 
@@ -125,6 +158,8 @@ class RunConfiguration:
         self.batch_size = train["batch_size"]
         self.max_epochs = train.get("max_epochs", 1000)
         self.patience = train.get("patience", 100)
+        # Relative early-stopping threshold: an epoch must beat the best by this
+        # fraction to count (robust across loss magnitudes; 0 saves any improvement).
         self.min_delta = train.get("min_delta", 1e-4)
         self.lr_rate = train["learning_rate"]
         self.accum_steps = train.get("accumulation_steps", 1)

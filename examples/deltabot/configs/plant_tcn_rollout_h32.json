@@ -1,0 +1,60 @@
+{
+  "system": "../system.toml",
+  "role": "plant",
+  "model_name": "deltabot_plant_tcn_rollout_h32",
+  "architecture": {
+    "window_size": 64,
+    "hidden_layers": [
+      { "TemporalConv": [9, 64, 3, 1, 1, 0.1] },
+      { "TemporalConv": [64, 64, 3, 1, 2, 0.1] },
+      { "TemporalConv": [64, 64, 3, 1, 4, 0.1] },
+      { "TemporalConv": [64, 64, 3, 1, 8, 0.1] },
+      { "TemporalConv": [64, 64, 3, 1, 16, 0.1] },
+      { "AdaptiveAvgPool1d": [1] },
+      { "Flatten": [1] },
+      { "Linear": [64, 128] },
+      "ReLU",
+      { "Linear": [128, 3] }
+    ]
+  },
+  "inputs": ["position", "velocity", "dac"],
+  "targets": {
+    "position": { "form": "delta", "weight": 1 }
+  },
+  "data": "../data/plant_dataset.h5",
+  "training": {
+    "batch_size": 8192,
+    "max_epochs": 16,
+    "patience": 16,
+    "min_delta": 0,
+    "learning_rate": 1e-6,
+    "optimiser": "AdamW",
+    "grad_scaler": "GradScaler",
+    "loss_function": "WeightedMSELoss",
+    "training_dtype": "bfloat16",
+    "accumulation_steps": 1,
+    "train_ratio": 0.8,
+    "validation_ratio": 0.1,
+    "test_display_num": 3,
+    "dataloader": { "auto_tune": false, "cpu_util": 80, "num_workers": 8, "prefetch_factor": 4 }
+  },
+  "rollout": {
+    "horizon": 32,
+    "curriculum_start": 2,
+    "curriculum_ramp": 6,
+    "ss_start": 1.0,
+    "ss_end": 0.0,
+    "ss_ramp": 10,
+    "step_weight": 0.1,
+    "horizon_weighting": "uniform",
+    "start_stride": 32,
+    "val_start_stride": 64
+  },
+  "run": {
+    "seed": 42,
+    "out_dir": "../runs",
+    "verbose_logging": true,
+    "compile": true,
+    "init_checkpoint": "../runs/deltabot_plant_tcn.pth"
+  }
+}
