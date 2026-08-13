@@ -274,11 +274,7 @@ def _log_channel_table(table: dict[int, list[ChannelMetrics]]) -> None:
     """
     Log the slim per-channel accuracy table across horizon steps.
 
-    Errors are shown as a percentage of that step's true-value std, so
-    they are scale-free, as a latency-style five-number summary: P50
-    (typical), P95 (the acceptance gate), P99, P99.9 and max (worst
-    case). Tight P50-P99 means predictable; the P99.9/max gap exposes
-    the tail. FIT is the system-ID goodness-of-fit.
+    Errors are shown as a percentage of that step's true-value std.
     """
 
     gate_pct = DEFAULT_GATE * 100
@@ -339,8 +335,8 @@ def _log_channel_table(table: dict[int, list[ChannelMetrics]]) -> None:
 
 def horizon_curves(errors: torch.Tensor) -> dict[str, np.ndarray]:
     """
-    Per-horizon-step error curves across samples: mean, median and
-    P99, each [H, A].
+    Per-horizon-step error curves across samples:
+    mean, median and P99, each [H, A].
     """
 
     e = errors.numpy()
@@ -354,8 +350,8 @@ def horizon_curves(errors: torch.Tensor) -> dict[str, np.ndarray]:
 
 def position_resolution(config: RunConfiguration) -> np.ndarray:
     """
-    Per-axis units-per-count of the predicted position channel (1.0 if
-    unknown).
+    Per-axis units-per-count of the predicted position channel
+    (1.0 if unknown).
     """
 
     channel = config.system.channel(config.target_channels[0])
@@ -433,9 +429,8 @@ def run_horizon_eval(
         ),
     )
 
-    # The per-axis percentile summary of the final-step drift, the
-    # same unit-labelled table the controller logs -- the headline
-    # rollout metric per axis.
+    # The per-axis percentile summary of the final-step drift,
+    # the same unit-labelled table the controller logs.
     final_nm = errors[:, -1, :].numpy() * to_nm[None, :]  # [N, A]
     pct_rows = [
         [float(np.percentile(final_nm[:, a], p)) for p in PERCENTILES]
@@ -514,9 +509,9 @@ def _plot_curves(
             alpha=0.5,
             label=f"{axis} mean",
         )
-    ax.set_xlabel("rollout horizon (steps)")
-    ax.set_ylabel("position error (nm)")
-    ax.set_title("Error vs horizon (free-running plant)")
+    ax.set_xlabel("Rollout horizon (steps)")
+    ax.set_ylabel("Position error (nm)")
+    ax.set_title("Error vs Horizon (free-running plant)")
     ax.legend(fontsize=8, ncol=2)
     fig.tight_layout()
     fig.savefig(path, format="svg")
