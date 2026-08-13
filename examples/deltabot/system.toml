@@ -53,12 +53,12 @@ unit     = "V"
 per_axis = true
 label    = "{axis}_DAC_real"
 
-[channels.dac.range]           # per-axis physical DAC range
-x = [-8.0, 8.0]
-y = [-8.0, 8.0]
-z = [-8.0, 8.0]
+[channels.dac.range]           # per-axis physical DAC range (voice-coil amplifier rail)
+x = [-737.25, 737.25]
+y = [-737.25, 737.25]
+z = [-737.25, 737.25]
 
 [channels.dac.safe_range]      # per-axis safety clamp on controller output
-x = [-8.0, 8.0]                # tighten per axis once safe envelopes are known
-y = [-8.0, 8.0]
-z = [-8.0, 8.0]
+x = [-737.25, 737.25]          # set to the recorded DAC envelope; tighten once known
+y = [-737.25, 737.25]
+z = [-737.25, 737.25]

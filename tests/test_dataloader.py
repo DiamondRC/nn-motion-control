@@ -1,4 +1,4 @@
-"""Dataloader correctness tests (Workstream B): boundaries, split gaps, train-only
+"""Dataloader correctness tests: boundaries, split gaps, train-only
 normalization and correctly-aligned denorm params.
 """
 
@@ -17,7 +17,9 @@ from nn_motion_control.data.ingest import (
 
 INPUTS_15 = [lbl for lbl in INPUT_LABELS if lbl != "timestep"]
 TARGETS_12 = [
-    lbl for lbl in TARGET_LABELS if lbl.endswith("_nxt") and lbl != "timestep_nxt"
+    lbl
+    for lbl in TARGET_LABELS
+    if lbl.endswith("_nxt") and lbl != "timestep_nxt"
 ]
 
 WINDOW = 5
@@ -30,21 +32,26 @@ def _targets_spec():
 def test_no_window_crosses_a_boundary(synth_h5):
     offsets = synth_h5["offsets"]
     starts = dl.build_valid_window_starts(offsets, WINDOW)
+
     for s in starts:
         seg = int(np.searchsorted(offsets, s, side="right") - 1)
         assert s + WINDOW <= offsets[seg + 1]
     # Per segment: (len - window + 1) valid starts.
     expected = sum(
-        int(e - s - WINDOW + 1) for s, e in zip(offsets[:-1], offsets[1:], strict=True)
+        int(e - s - WINDOW + 1)
+        for s, e in zip(offsets[:-1], offsets[1:], strict=True)
     )
     assert len(starts) == expected
 
 
 def test_contiguous_split_leaves_a_gap(synth_h5):
     starts = dl.build_valid_window_starts(synth_h5["offsets"], WINDOW)
-    train, val, test = dl.split_window_starts_contiguous(starts, 0.7, 0.15, WINDOW)
+    train, val, test = dl.split_window_starts_contiguous(
+        starts, 0.7, 0.15, WINDOW
+    )
     assert len(train) and len(val) and len(test)
-    # Last train target/input row must sit strictly before the first val input row.
+    # Last train target/input row must sit strictly before the first
+    # val input row.
     assert val.min() - (train.max() + WINDOW - 1) >= 1
 
 
@@ -162,12 +169,14 @@ def test_ram_and_file_paths_agree(synth_h5):
 
 
 def test_non_monotonic_column_order(synth_h5):
-    # A channel-name expansion can map to non-increasing HDF5 column indices (e.g. a
-    # DAC column, stored at the end of the file, requested before a position column).
-    # Both read paths must honour the *requested* order, not the file's column order.
+    # A channel-name expansion can map to non-increasing HDF5 column
+    # indices (e.g. a DAC column, stored at the end of the file,
+    # requested before a position column). Both read paths must
+    # honour the requested order, not the file's column order.
     inputs = ["x_DAC_real", "x_pos"]  # HDF5 indices 13, 1 -> non-increasing
     targets = [{"x_pos_nxt": 1}]
     raw = synth_h5["inputs"][0]  # full row (all 16 columns)
+
     for ram in (True, False):
         ds = dl.H5TimeSeriesDataset(
             synth_h5["path"],
@@ -185,7 +194,9 @@ def test_non_monotonic_column_order(synth_h5):
 
 @settings(max_examples=40, deadline=None)
 @given(
-    seg=st.lists(st.integers(min_value=3, max_value=20), min_size=1, max_size=5),
+    seg=st.lists(
+        st.integers(min_value=3, max_value=20), min_size=1, max_size=5
+    ),
     w=st.integers(min_value=1, max_value=6),
 )
 def test_no_window_crosses_boundary_property(seg, w):
@@ -195,6 +206,7 @@ def test_no_window_crosses_boundary_property(seg, w):
             dl.build_valid_window_starts(offsets, w)
         return
     starts = dl.build_valid_window_starts(offsets, w)
+
     for s in starts:
         k = int(np.searchsorted(offsets, s, side="right") - 1)
         assert s + w <= offsets[k + 1]  # window stays inside its segment
@@ -212,3 +224,62 @@ def test_pre_v2_schema_is_rejected(tmp_path):
         dl.H5TimeSeriesDataset(
             str(path), INPUTS_15[:1], [{TARGETS_12[0]: 1}], window_size=1
         )
+
+
+def test_select_quiescent_starts_keeps_only_holds():
+    """Windows over a quiescent hold pass, excitation windows are
+    filtered out.
+    """
+    w = 4
+    # F=3: col0 position, col1 velocity, col2 dac. Identity normalisation.
+    n_rows = 40
+    inputs = torch.zeros(n_rows, 3)
+    # First half: a hold (dac ~ 0, velocity ~ 0). Second half: excitation.
+    inputs[20:, 2] = 100.0  # large dac
+    inputs[20:, 1] = 50.0  # large velocity
+    starts = np.arange(0, n_rows - w + 1, dtype=np.int64)
+    kept = dl.select_quiescent_starts(
+        inputs,
+        starts,
+        window_size=w,
+        dac_cols=[2],
+        vel_cols=[1],
+        pos_cols=[0],
+        in_mean=torch.zeros(3),
+        in_std=torch.ones(3),
+        max_dac=10.0,
+        max_speed=5.0,
+    )
+    # A window is quiescent only if every row in [s, s+w) is a hold
+    # and the last frame is slow: starts whose window reaches into
+    # the excitation region are dropped.
+    assert kept.max() <= 16
+    assert set(kept.tolist()) == set(range(17))
+
+
+def test_select_quiescent_starts_denormalises_thresholds():
+    """Thresholds are physical: normalisation is inverted before comparing."""
+    inputs = torch.zeros(6, 3)
+    inputs[:, 2] = (
+        1.0  # normalised dac = 1 -> physical = mean + std = 5 + 3 = 8
+    )
+    starts = np.arange(0, 5, dtype=np.int64)
+
+    def keep(max_dac: float) -> int:
+        return len(
+            dl.select_quiescent_starts(
+                inputs,
+                starts,
+                window_size=2,
+                dac_cols=[2],
+                vel_cols=[1],
+                pos_cols=[0],
+                in_mean=torch.tensor([0.0, 0.0, 5.0]),
+                in_std=torch.tensor([1.0, 1.0, 3.0]),
+                max_dac=max_dac,
+                max_speed=1.0,
+            )
+        )
+
+    assert keep(7.0) == 0  # physical dac 8 > 7 -> filtered out
+    assert keep(9.0) == len(starts)  # physical dac 8 < 9 -> kept

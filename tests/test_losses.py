@@ -1,4 +1,4 @@
-"""WeightedMSELoss tests (Workstream C): the per-target weighting must actually run."""
+"""WeightedMSELoss tests: the per-target weighting must actually run."""
 
 import torch
 
@@ -12,7 +12,10 @@ def test_two_arg_forward_does_not_raise():
 
 
 def test_weights_change_the_loss():
-    preds, targets = torch.zeros(3, 2), torch.ones(3, 2)  # squared error 1 per element
+    preds, targets = (
+        torch.zeros(3, 2),
+        torch.ones(3, 2),
+    )  # squared error 1 per element
     unweighted = WeightedMSELoss()(preds, targets)
     weighted = WeightedMSELoss(weights=torch.tensor([1.0, 3.0]))(preds, targets)
     assert torch.isclose(unweighted, torch.tensor(1.0))

@@ -16,9 +16,10 @@ class NormStats:
     """
     Fitted z-score parameters for a column set.
 
-    ``mean``/``std`` are length ``[n_cols]`` and applied as ``(x - mean) / std``.
-    Non-normalisable columns (e.g. ``timestep``) carry identity params (0 / 1) so the
-    same transform applies uniformly. ``std`` already has an epsilon added.
+    'mean'/'std' are length [n_cols] and applied as (x - mean) / std.
+    Non-normalisable columns (e.g. 'timestep') carry identity params (0 / 1)
+    so the same transform applies uniformly. 'std' already has an epsilon
+    added.
     """
 
     mean: torch.Tensor
@@ -40,4 +41,6 @@ def fit_stats(
     mean = torch.where(normalizable, mean, torch.zeros_like(mean))
     std = torch.where(normalizable, std, torch.ones_like(std))
 
-    return NormStats(mean=mean.to(dtype), std=std.to(dtype), normalizable=normalizable)
+    return NormStats(
+        mean=mean.to(dtype), std=std.to(dtype), normalizable=normalizable
+    )

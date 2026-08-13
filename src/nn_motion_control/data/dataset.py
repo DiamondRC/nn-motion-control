@@ -71,7 +71,9 @@ class H5TimeSeriesDataset(Dataset):
         self._load_metadata()
 
         if self.window_size > self.num_samples:
-            raise ValueError(f"{self.window_size=} cannot exceed {self.num_samples=}")
+            raise ValueError(
+                f"{self.window_size=} cannot exceed {self.num_samples=}"
+            )
 
         if load_into_ram:
             self._load_all_to_ram()
@@ -87,7 +89,10 @@ class H5TimeSeriesDataset(Dataset):
         logger.debug("Gathering dataset metadata...")
 
         with h5py.File(self.h5_path, "r") as f:
-            if f.attrs.get("schema_version", 1) < 2 or "segment_offsets" not in f:
+            if (
+                f.attrs.get("schema_version", 1) < 2
+                or "segment_offsets" not in f
+            ):
                 raise ValueError(
                     f"{self.h5_path} predates schema v2 (no segment_offsets). "
                     "Rebuild it with nn_motion_control.data.ingest."
@@ -119,9 +124,10 @@ class H5TimeSeriesDataset(Dataset):
         )
 
     def _load_all_to_ram(self) -> None:
-        # Read full columns into numpy first, then select: the requested column order
-        # (channel-name expansion) need not be increasing, but h5py's multi-axis fancy
-        # indexing requires increasing indices — numpy indexing does not.
+        # Read full columns into numpy first, then select: the requested
+        # column order (channel-name expansion) need not be increasing, but
+        # h5py's multi-axis fancy indexing requires increasing indices,
+        # numpy indexing does not.
         with h5py.File(self.h5_path, "r") as f:
             x = np.asarray(as_dataset(f, self.DATA_KEY))[:, self._input_idx]
             y = np.asarray(as_dataset(f, self.TARGET_KEY))[:, self._target_idx]
@@ -135,10 +141,13 @@ class H5TimeSeriesDataset(Dataset):
                 return self._inputs[torch.from_numpy(row_sel)]
             return self._inputs[row_sel]
         f = self._open_file()
-        # h5py fancy indexing requires increasing indices; order is irrelevant to stats.
+        # h5py fancy indexing requires increasing indices; order is
+        # irrelevant to stats.
         sel = np.sort(row_sel) if isinstance(row_sel, np.ndarray) else row_sel
+
         return torch.as_tensor(
-            as_dataset(f, self.DATA_KEY)[sel][:, self._input_idx], dtype=self.dtype
+            as_dataset(f, self.DATA_KEY)[sel][:, self._input_idx],
+            dtype=self.dtype,
         )
 
     def _read_target_rows(self, row_sel) -> torch.Tensor:
@@ -148,21 +157,33 @@ class H5TimeSeriesDataset(Dataset):
             return self._targets[row_sel]
         f = self._open_file()
         sel = np.sort(row_sel) if isinstance(row_sel, np.ndarray) else row_sel
+
         return torch.as_tensor(
-            as_dataset(f, self.TARGET_KEY)[sel][:, self._target_idx], dtype=self.dtype
+            as_dataset(f, self.TARGET_KEY)[sel][:, self._target_idx],
+            dtype=self.dtype,
         )
 
-    def fit_normalization(self, train_starts: np.ndarray, split_mode: str) -> None:
+    def fit_normalization(
+        self, train_starts: np.ndarray, split_mode: str
+    ) -> None:
         """
-        Fit z-score params from the TRAIN rows only and build final metadata.
+        Fit z-score params from the train rows only and build final
+        metadata.
         """
 
         w = self.window_size
         if split_mode == "contiguous":
             lo, hi = int(train_starts.min()), int(train_starts.max())
-            in_sel: object = slice(lo, hi + w)  # input rows across all train windows
+            in_sel: object = slice(
+                lo, hi + w
+            )  # input rows across all train windows
             tgt_sel: object = slice(lo + w - 1, hi + w)  # their target rows
         else:  # random, window_size == 1 -> target row == start row
+            if w != 1:
+                raise ValueError(
+                    f"split_mode 'random' requires window_size == 1, got {w} "
+                    "(target rows would be misaligned)"
+                )
             sel = np.asarray(train_starts, dtype=np.int64)
             in_sel = sel
             tgt_sel = sel
@@ -178,23 +199,35 @@ class H5TimeSeriesDataset(Dataset):
 
         self.meta = self._build_meta(input_stats, target_stats)
 
+    @property
+    def input_norm(self) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Fitted per-column input (mean, std) for denormalising warmup
+        windows.
+        """
+
+        return self._in_mean, self._in_std
+
     def normalized_arrays(
         self, device: str = "cpu"
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
-        Return the fully normalised ``(inputs, targets)`` tensors on ``device``.
+        Return the fully normalised (inputs, targets) tensors on 'device'.
 
-        Applies the fitted z-score to the RAM-resident columns once, so a batched
-        loader can gather windows without per-item normalisation. Requires
-        ``load_into_ram`` and a prior ``fit_normalization``.
+        Applies the fitted z-score to the RAM-resident columns once, so a
+        batched loader can gather windows without per-item normalisation.
+        Requires 'load_into_ram' and a prior 'fit_normalization'.
         """
 
         if self._inputs is None or self._targets is None:
             raise RuntimeError("normalized_arrays requires load_into_ram=True")
         if self.meta is None:
-            raise RuntimeError("call fit_normalization before normalized_arrays")
+            raise RuntimeError(
+                "Call fit_normalization before normalized_arrays"
+            )
         x = (self._inputs - self._in_mean) / self._in_std
         y = (self._targets - self._tgt_mean) / self._tgt_std
+
         return x.to(device), y.to(device)
 
     def _build_meta(
@@ -202,8 +235,12 @@ class H5TimeSeriesDataset(Dataset):
     ) -> DatasetMetadata:
         def denorm(labels, stats):
             return {
-                "mean": {lbl: float(stats.mean[i]) for i, lbl in enumerate(labels)},
-                "std": {lbl: float(stats.std[i]) for i, lbl in enumerate(labels)},
+                "mean": {
+                    lbl: float(stats.mean[i]) for i, lbl in enumerate(labels)
+                },
+                "std": {
+                    lbl: float(stats.std[i]) for i, lbl in enumerate(labels)
+                },
             }
 
         return DatasetMetadata(
@@ -211,7 +248,8 @@ class H5TimeSeriesDataset(Dataset):
             target_labels=self.target_labels,
             input_denorm_params=denorm(self.allowed_inputs, input_stats),
             target_denorm_params=denorm(self.allowed_targets, target_stats),
-            # Plain per-target weight vector (targets are already unit-variance).
+            # Plain per-target weight vector (targets are already
+            # unit-variance).
             loss_weights=torch.tensor(self.loss_weighting, dtype=self.dtype),
             input_stats=input_stats,
             target_stats=target_stats,
@@ -220,6 +258,7 @@ class H5TimeSeriesDataset(Dataset):
     def _open_file(self) -> h5py.File:
         if self._file is None:
             self._file = h5py.File(self.h5_path, "r")
+
         return self._file
 
     def __len__(self) -> int:
@@ -227,7 +266,8 @@ class H5TimeSeriesDataset(Dataset):
 
     def __getitem__(self, idx: int):
         """
-        ``idx`` is a window-START row; returns the normalised (window, target).
+        'idx' is a window-start row; returns the normalised (window,
+        target).
         """
 
         w = self.window_size
@@ -246,13 +286,19 @@ class H5TimeSeriesDataset(Dataset):
             inputs = as_dataset(f, self.DATA_KEY)
             targets = as_dataset(f, self.TARGET_KEY)
             if w == 1:
-                # Index the row first (-> numpy), then columns, so a non-increasing
-                # column selection is allowed (h5py multi-axis fancy indexing is not).
-                x = torch.as_tensor(inputs[idx][self._input_idx], dtype=self.dtype)
-                y = torch.as_tensor(targets[idx][self._target_idx], dtype=self.dtype)
+                # Index the row first (-> numpy), then columns, so a
+                # non-increasing column selection is allowed (h5py
+                # multi-axis fancy indexing is not).
+                x = torch.as_tensor(
+                    inputs[idx][self._input_idx], dtype=self.dtype
+                )
+                y = torch.as_tensor(
+                    targets[idx][self._target_idx], dtype=self.dtype
+                )
             else:
                 x = torch.as_tensor(
-                    inputs[idx : idx + w][:, self._input_idx].T, dtype=self.dtype
+                    inputs[idx : idx + w][:, self._input_idx].T,
+                    dtype=self.dtype,
                 )
                 y = torch.as_tensor(
                     targets[idx + w - 1, self._target_idx], dtype=self.dtype
@@ -263,6 +309,7 @@ class H5TimeSeriesDataset(Dataset):
         else:
             x = (x - self._in_mean.unsqueeze(1)) / self._in_std.unsqueeze(1)
         y = (y - self._tgt_mean) / self._tgt_std
+
         return x, y
 
     def close_file(self) -> None:
@@ -289,7 +336,8 @@ class H5TimeSeriesDataset(Dataset):
 
 class SubsetDataset(Dataset):
     """
-    A view of ``dataset`` restricted to ``indices`` (which window starts to serve).
+    A view of 'dataset' restricted to 'indices' (which window starts to
+    serve).
     """
 
     def __init__(self, dataset: Dataset, indices: Sequence[int] | np.ndarray):

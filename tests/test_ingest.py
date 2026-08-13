@@ -1,5 +1,6 @@
 """
-Ingest (raw log -> HDF5) tests: alignment/row accounting, schema v2, input rejection.
+Ingest (raw log -> HDF5) tests: alignment/row accounting, schema v2,
+input rejection.
 """
 
 import h5py
@@ -14,6 +15,7 @@ def _write_raw(path, n=30, seed=0):
     """Write a synthetic raw log: 10 whitespace columns, increasing timestep."""
     rng = np.random.default_rng(seed)
     cols = [np.arange(n, dtype=float)]  # timestep
+
     for _ in range(9):  # x_input, x_DAC, ..., x_pos, y_pos, z_pos
         cols.append(rng.normal(size=n))
     np.savetxt(path, np.column_stack(cols))
@@ -37,7 +39,7 @@ def test_build_dataset_alignment_and_schema(tmp_path):
         segoff = as_dataset(h, "segment_offsets")[:]
         assert segoff[0] == 0 and segoff[-1] == n
         assert len(as_dataset(h, "input_labels")) == 16
-        # 13 absolute (`timestep_nxt` + 12 state `_nxt`) + 12 `_delta`.
+        # 13 absolute ('timestep_nxt' + 12 state '_nxt') + 12 '_delta'.
         assert len(as_dataset(h, "target_labels")) == 25
         assert "input_norm_params" not in h  # normalisation left the build step
         assert "target_norm_params" not in h

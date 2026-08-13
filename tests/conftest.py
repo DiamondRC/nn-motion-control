@@ -1,7 +1,7 @@
 """Shared test fixtures.
 
-All fixtures build small synthetic data so the suite is fast and needs neither the
-real ~10M-row dataset nor a GPU.
+All fixtures build small synthetic data so the suite is fast and
+needs neither the real ~10M-row dataset nor a GPU.
 """
 
 import json
@@ -16,17 +16,23 @@ from nn_motion_control.data.ingest import (
     TARGET_LABELS,
 )
 
-# The 15/12 features a model actually consumes (everything except the timestep index).
-# TARGETS_12 is the absolute next-state subset; the targets dataset also carries the
-# parallel `_delta` columns, which these fixtures do not exercise.
+# The 15/12 features a model actually consumes (everything except the
+# timestep index). TARGETS_12 is the absolute next-state subset, the
+# targets dataset also carries the parallel '_delta' columns, which
+# these fixtures do not exercise.
 INPUTS_15 = [lbl for lbl in INPUT_LABELS if lbl != "timestep"]
 TARGETS_12 = [
-    lbl for lbl in TARGET_LABELS if lbl.endswith("_nxt") and lbl != "timestep_nxt"
+    lbl
+    for lbl in TARGET_LABELS
+    if lbl.endswith("_nxt") and lbl != "timestep_nxt"
 ]
 
-# The deltabot SystemSpec: its channel labels match the synthetic dataset's columns,
-# so the same spec drives both the real instance and the hermetic tests.
-DELTABOT_SYSTEM = Path(__file__).resolve().parents[1] / "examples/deltabot/system.toml"
+# The deltabot SystemSpec: its channel labels match the synthetic
+# dataset's columns, so the same spec drives both the real instance
+# and the hermetic tests.
+DELTABOT_SYSTEM = (
+    Path(__file__).resolve().parents[1] / "examples/deltabot/system.toml"
+)
 
 
 @pytest.fixture
@@ -63,15 +69,16 @@ def synth_h5(tmp_path):
 def config_factory(tmp_path, synth_h5):
     """Return a factory that writes an artifact-config JSON (new schema).
 
-    ``window_size``, ``hidden_layers`` and a ``training`` dict may be overridden;
-    remaining kwargs override top-level keys.
+    'window_size', 'hidden_layers' and a 'training' dict may be
+    overridden, remaining kwargs override top-level keys.
     """
 
     def _make(**overrides):
         arch = {
             "window_size": overrides.pop("window_size", 4),
             "hidden_layers": overrides.pop(
-                "hidden_layers", [{"Linear": [15, 16]}, "ReLU", {"Linear": [16, 12]}]
+                "hidden_layers",
+                [{"Linear": [15, 16]}, "ReLU", {"Linear": [16, 12]}],
             ),
         }
         training = {

@@ -1,4 +1,7 @@
-"""Reliability probes: recover a linear map's operator norm; quantisation trend."""
+"""Reliability probes.
+
+Recover a linear map's operator norm, quantisation trend.
+"""
 
 import torch
 import torch.nn as nn
@@ -41,7 +44,9 @@ def test_local_lipschitz_bounded_by_spectral_norm():
     sens = local_lipschitz(m, torch.randn(16, 12), n_directions=16, eps=1e-3)
     # random unit directions can only realise up to the largest singular value.
     assert (sens <= op_norm + 1e-3).all()
-    assert float(sens.max()) > 0.3 * op_norm  # and they do probe a real fraction of it
+    assert (
+        float(sens.max()) > 0.3 * op_norm
+    )  # and they do probe a real fraction of it
 
 
 def test_quant_sensitivity_grows_as_bits_drop_and_restores_weights():

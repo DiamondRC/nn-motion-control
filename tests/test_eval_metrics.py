@@ -1,6 +1,7 @@
 """
-eval.metrics: absolute/normalised error metrics and the acceptance (P95/std) gate,
-with P99 retained as a tail / discontinuity indicator.
+eval.metrics: absolute/normalised error metrics and the acceptance
+(P95/std) gate, with P99 retained as a tail / discontinuity
+indicator.
 """
 
 import numpy as np
@@ -11,8 +12,9 @@ from nn_motion_control.eval.metrics import DEFAULT_GATE, channel_metrics
 
 
 def test_to_flat_numpy_upcasts_bf16_and_half():
-    # numpy has no bf16/half; the eval loop must upcast before .numpy() (regression:
-    # bf16 configs previously crashed on the targets conversion).
+    # numpy has no bf16/half, the eval loop must upcast before
+    # .numpy() (regression: bf16 configs previously crashed on the
+    # targets conversion).
     for dt in (torch.bfloat16, torch.float16, torch.float32):
         out = to_flat_numpy(torch.ones(2, 3, dtype=dt))
         assert out.shape == (6,)
@@ -44,15 +46,18 @@ def test_absolute_errors_are_physical_units_not_percent():
 def test_gate_fails_when_p95_exceeds_5pct():
     rng = np.random.default_rng(1)
     tgt = rng.normal(0, 10, size=100_000)
-    pred = tgt + rng.normal(0, 1.0, size=tgt.size)  # noise std ~1 = 10% of target std
+    pred = tgt + rng.normal(
+        0, 1.0, size=tgt.size
+    )  # noise std ~1 = 10% of target std
     m = channel_metrics("x", pred, tgt)
     assert m.p95_frac > DEFAULT_GATE  # the gate quantity itself is blown
     assert not m.passes
 
 
 def test_heavy_p99_tail_alone_does_not_fail_gate():
-    # P95 is the gate; P99 only flags the tail. Errors are tiny for 96% of samples but
-    # a 3% burst is large: P95 stays within the gate, P99 blows past it -> still PASS.
+    # P95 is the gate, P99 only flags the tail. Errors are tiny for
+    # 96% of samples but a 3% burst is large: P95 stays within the
+    # gate, P99 blows past it, still passes.
     tgt = np.random.default_rng(3).normal(0, 10, size=100_000)
     err = np.full(tgt.size, 0.05)  # 0.5% of std for the bulk
     err[:3000] = 2.0  # top 3% ~ 20% of std -> lifts P99, not P95

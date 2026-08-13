@@ -1,6 +1,6 @@
 """
-Data pipeline: windowed HDF5 dataset, leakage-aware splitting, z-score normalisation,
-and DataLoader construction.
+Data pipeline: windowed HDF5 dataset, leakage-aware splitting, z-score
+normalisation, and DataLoader construction.
 """
 
 from nn_motion_control.data.dataset import (
@@ -19,6 +19,7 @@ from nn_motion_control.data.loaders import (
     ensure_enough_ram,
     make_dataloaders,
     make_device_loaders,
+    select_quiescent_starts,
     setup_workers,
 )
 from nn_motion_control.data.normalize import NormStats, fit_stats
@@ -44,6 +45,7 @@ __all__ = [
     "fit_stats",
     "make_dataloaders",
     "make_device_loaders",
+    "select_quiescent_starts",
     "setup_workers",
     "split_window_starts_contiguous",
     "split_window_starts_random",

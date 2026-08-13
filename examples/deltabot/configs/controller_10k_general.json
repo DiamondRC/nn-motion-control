@@ -1,0 +1,46 @@
+{
+  "model_name": "deltabot_controller_10k_general",
+  "system": "../system.toml",
+  "run": { "out_dir": "../runs", "seed": 42 },
+  "plant": "champion:plant",
+  "controller": {
+    "features": ["position", "velocity", "reference", "reference_velocity"],
+    "hidden": [128, 128],
+    "quant": [
+      { "weight_bits": 16, "act_bits": 48 },
+      { "weight_bits": 16, "act_bits": 16 },
+      { "weight_bits": 16, "act_bits": 16 }
+    ],
+    "servo_rate_hz": 10000,
+    "training": {
+      "horizon": 96,
+      "curriculum_start": 24,
+      "curriculum_ramp": 10,
+      "tracking_weight": 1.0,
+      "velocity_weight": 0.0,
+      "effort_weight": 1e-3,
+      "rate_weight": 1e-3,
+      "huber_delta": 100.0,
+      "reference": {
+        "kind": "mixed",
+        "xy": [0, 1],
+        "radius": [100.0, 1200.0],
+        "angular": [0.002, 0.02],
+        "z_rate": [-20.0, 20.0],
+        "step": [-800.0, 800.0],
+        "smooth_amp": [0.0, 250.0],
+        "components": 3,
+        "weights": [1.0, 1.0, 1.0, 1.0]
+      },
+      "seed_quiescence": { "max_dac": 20.0, "max_speed": 2.0 },
+      "start_stride": 4,
+      "val_start_stride": 32
+    },
+    "batch_size": 256,
+    "max_epochs": 60,
+    "patience": 15,
+    "min_delta": 1e-3,
+    "learning_rate": 3e-3,
+    "optimiser": "Adam"
+  }
+}

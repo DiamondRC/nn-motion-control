@@ -3,12 +3,14 @@ Build a training dataset (HDF5, schema v2).
 
 Each raw text file recording is parsed into aligned (state, next-state) rows:
  - Positions are centred per file
- - DAC demands are shifted by one step so DAC[i] is the demand that produced pos[i]
- - Velocity/acceleration/jerk are derived by successive finite differences.
+ - DAC demands are shifted by one step so DAC[i] is the demand that
+   produced pos[i]
+ - Velocity/acceleration/jerk are derived by successive finite
+   differences.
 
-Targets are stored in two forms so an artifact config can select either: the absolute
-next state (``*_nxt``) and the change from the current step
-(``*_delta`` = next - current).
+Targets are stored in two forms so an artifact config can select either:
+the absolute next state ('*_nxt') and the change from the current step
+('*_delta' = next - current).
 
 The rows from every file are concatenated into one HDF5 file that stores raw
 (un-normalised) features plus per-file boundary and provenance metadata.
@@ -112,6 +114,12 @@ TARGET_LABELS = [*NXT_LABELS, *DELTA_LABELS]
 # 1 (DAC shift) + 3 (V/A/J warm-up) + 1 (next-state).
 ROWS_LOST_PER_FILE = 5
 
+# Guards diff(timestep) against zero/negative dt before it is divided into.
+_DT_EPS = 1e-9
+
+# Rows per HDF5 chunk for the inputs/targets datasets.
+_HDF5_CHUNK_ROWS = 8192
+
 
 @dataclass(frozen=True)
 class FileResult:
@@ -134,6 +142,7 @@ def discover_files(data_dir: Path, pattern: str = "*.txt") -> list[Path]:
     files = sorted(data_dir.glob(pattern))
     if not files:
         raise FileNotFoundError(f"No files matching {pattern!r} in {data_dir}")
+
     return files
 
 
@@ -152,22 +161,28 @@ def read_raw_frame(path: Path) -> pd.DataFrame:
     fields = first.split()
     if len(fields) != len(RAW_COLUMNS):
         raise ValueError(
-            f"{path}: expected {len(RAW_COLUMNS)} whitespace-separated columns, "
+            f"{path}: expected {len(RAW_COLUMNS)} "
+            f"whitespace-separated columns, "
             f"got {len(fields)} on the first data line"
         )
     try:
         [float(x) for x in fields]
     except ValueError as exc:
         raise ValueError(
-            f"{path}: first line is not numeric (stray header?): {first.strip()!r}"
+            f"{path}: first line is not numeric (stray header?): "
+            f"{first.strip()!r}"
         ) from exc
 
     df = cast(
         pd.DataFrame,
-        pd.read_csv(path, sep=r"\s+", header=None, names=RAW_COLUMNS)[KEEP_COLUMNS],
+        pd.read_csv(path, sep=r"\s+", header=None, names=RAW_COLUMNS)[
+            KEEP_COLUMNS
+        ],
     )
     if df.isnull().to_numpy().any():
-        raise ValueError(f"{path}: contains missing/non-numeric values after parsing")
+        raise ValueError(
+            f"{path}: contains missing/non-numeric values after parsing"
+        )
 
     ts = df["timestep"].to_numpy()
     steps = np.diff(ts)
@@ -179,10 +194,13 @@ def read_raw_frame(path: Path) -> pd.DataFrame:
             path.name,
             n_bad,
         )
+
     return df
 
 
-def derive_pvaj(pos_xyz: np.ndarray, dt_safe: np.ndarray) -> dict[str, np.ndarray]:
+def derive_pvaj(
+    pos_xyz: np.ndarray, dt_safe: np.ndarray
+) -> dict[str, np.ndarray]:
     """
     Velocity/acceleration/jerk by successive finite differences.
     """
@@ -194,6 +212,7 @@ def derive_pvaj(pos_xyz: np.ndarray, dt_safe: np.ndarray) -> dict[str, np.ndarra
     vel = np.pad(vel_u, ((0, 0), (1, 0)), constant_values=np.nan)
     acc = np.pad(acc_u, ((0, 0), (2, 0)), constant_values=np.nan)
     jer = np.pad(jer_u, ((0, 0), (3, 0)), constant_values=np.nan)
+
     return {"vel": vel, "acc": acc, "jer": jer}
 
 
@@ -205,41 +224,49 @@ def parse_raw_file(path: Path, storage_dtype: np.dtype) -> FileResult:
     df = read_raw_frame(path)
     n_raw = len(df)
 
-    # Centre positions at the origin; keep the offset so absolute positions can be
-    # reconstructed later.
+    # Centre positions at the origin; keep the offset so absolute positions
+    # can be reconstructed later.
     pos_offset = df[list(POS_COLS)].mean().to_numpy(dtype=np.float64)
+
     for i, col in enumerate(POS_COLS):
         df[col] = df[col] - pos_offset[i]
 
-    # Shift DAC demands down by one so DAC[i] is the demand that produced pos[i].
-    # The first row loses its DAC and is dropped explicitly.
+    # Shift DAC demands down by one so DAC[i] is the demand that produced
+    # pos[i]. The first row loses its DAC and is dropped explicitly.
     for col in DAC_COLS:
         df[col] = df[col].shift(1)
     df = df.iloc[1:].reset_index(drop=True)
 
-    # Time deltas (guarded against non-positive dt) and a relative timestep index.
+    # Time deltas (guarded against non-positive dt) and a relative
+    # timestep index.
     ts = df["timestep"].to_numpy(dtype=np.int64)
-    dt_safe = np.clip(np.diff(ts), 1e-9, None)
+    dt_safe = np.clip(np.diff(ts), _DT_EPS, None)
     df["timestep"] = ts - ts[0]
 
     # Derive V/A/J - drop the first 3 warm-up rows explicitly.
     pvaj = derive_pvaj(
-        np.stack([df["x_pos"], df["y_pos"], df["z_pos"]]).astype(np.float64), dt_safe
+        np.stack([df["x_pos"], df["y_pos"], df["z_pos"]]).astype(np.float64),
+        dt_safe,
     )
+
     for i, axis in enumerate("xyz"):
         df[f"{axis}_vel"] = pvaj["vel"][i]
         df[f"{axis}_acc"] = pvaj["acc"][i]
         df[f"{axis}_jer"] = pvaj["jer"][i]
     df = df.iloc[3:].reset_index(drop=True)
 
-    # Absolute next-state targets via a -1 shift (timestep + every state channel).
+    # Absolute next-state targets via a -1 shift (timestep + every state
+    # channel).
     for base_label in ("timestep", *STATE_LABELS):
         df[f"{base_label}_nxt"] = df[base_label].shift(-1)
-    # Delta targets: next - current. The tiny per-step change becomes a zero-centred,
-    # well-conditioned target; absolute state is recovered as current + delta.
+
+    # Delta targets: next - current. The tiny per-step change becomes a
+    # zero-centred, well-conditioned target; absolute state is recovered
+    # as current + delta.
     for base_label in STATE_LABELS:
         df[f"{base_label}_delta"] = df[f"{base_label}_nxt"] - df[base_label]
-    # The final row lost its next-state (and hence its delta); drop it explicitly.
+    # The final row lost its next-state (and hence its delta); drop it
+    # explicitly.
     df = df.iloc[:-1].reset_index(drop=True)
 
     n_out = len(df)
@@ -299,7 +326,9 @@ def build_dataset(
     storage_dtype = np.dtype(storage_dtype)
 
     files = discover_files(data_dir, pattern)
-    logger.info("Found %d file(s) matching %r in %s", len(files), pattern, data_dir)
+    logger.info(
+        "Found %d file(s) matching %r in %s", len(files), pattern, data_dir
+    )
 
     if output_file.exists():
         if not overwrite:
@@ -321,7 +350,7 @@ def build_dataset(
             shape=(0, n_in),
             maxshape=(None, n_in),
             dtype=storage_dtype,
-            chunks=(8192, n_in),
+            chunks=(_HDF5_CHUNK_ROWS, n_in),
             compression=compression,
         )
         dset_tg = f.create_dataset(
@@ -329,7 +358,7 @@ def build_dataset(
             shape=(0, n_tgt),
             maxshape=(None, n_tgt),
             dtype=storage_dtype,
-            chunks=(8192, n_tgt),
+            chunks=(_HDF5_CHUNK_ROWS, n_tgt),
             compression=compression,
         )
 
@@ -350,11 +379,16 @@ def build_dataset(
         if total == 0:
             raise ValueError("No rows were produced from any input file")
 
-        f.create_dataset("segment_offsets", data=np.asarray(offsets, dtype=np.int64))
-        f.create_dataset("file_names", data=file_names)
-        f.create_dataset("file_row_counts", data=np.asarray(row_counts, dtype=np.int64))
         f.create_dataset(
-            "file_position_offsets", data=np.asarray(pos_offsets, dtype=np.float64)
+            "segment_offsets", data=np.asarray(offsets, dtype=np.int64)
+        )
+        f.create_dataset("file_names", data=file_names)
+        f.create_dataset(
+            "file_row_counts", data=np.asarray(row_counts, dtype=np.int64)
+        )
+        f.create_dataset(
+            "file_position_offsets",
+            data=np.asarray(pos_offsets, dtype=np.float64),
         )
         f.create_dataset("input_labels", data=INPUT_LABELS)
         f.create_dataset("target_labels", data=TARGET_LABELS)
@@ -378,10 +412,14 @@ def build_dataset(
 
 def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover
     parser = argparse.ArgumentParser(
-        description="Build the PVAJ->next-state training dataset (HDF5 schema v2)."
+        description=(
+            "Build the PVAJ->next-state training dataset (HDF5 schema v2)."
+        )
     )
     parser.add_argument("--data-dir", type=Path, default=Path("./data/"))
-    parser.add_argument("--output", type=Path, default=Path("./data/plant_dataset.h5"))
+    parser.add_argument(
+        "--output", type=Path, default=Path("./data/plant_dataset.h5")
+    )
     parser.add_argument("--pattern", default="*.txt")
     parser.add_argument(
         "--storage-dtype", default="float32", choices=["float32", "float64"]
@@ -413,6 +451,7 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover
         overwrite=args.overwrite,
         compression=None if args.compression == "none" else args.compression,
     )
+
     return 0
 
 

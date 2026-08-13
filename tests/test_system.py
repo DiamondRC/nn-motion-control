@@ -1,4 +1,7 @@
-"""Unit tests for core.system.SystemSpec (broadcast/per-axis, label expansion)."""
+"""Unit tests for core.system.SystemSpec.
+
+Broadcast/per-axis, label expansion.
+"""
 
 from pathlib import Path
 
@@ -6,10 +9,23 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from nn_motion_control.core.system import SystemSpec
+from nn_motion_control.core.system import ChannelSpec, SystemSpec
 
 REPO = Path(__file__).resolve().parents[1]
 DELTABOT = REPO / "examples/deltabot/system.toml"
+
+
+def test_per_axis_label_requires_axis_placeholder():
+    # A per-axis template without {axis} would collapse all axes to
+    # one column, reject.
+    with pytest.raises(ValueError):
+        ChannelSpec(
+            name="pos", kind="measured", per_axis=True, label_template="{name}"
+        )
+    # A non-per-axis channel may omit it.
+    ChannelSpec(
+        name="temp", kind="measured", per_axis=False, label_template="temp"
+    )
 
 
 def test_loads_deltabot_spec():
@@ -25,7 +41,7 @@ def test_loads_deltabot_spec():
 def test_broadcast_field_fans_out_to_all_axes():
     spec = SystemSpec.from_toml(DELTABOT)
     pos = spec.channel("position")
-    # A single `limits` value must appear identically for every axis.
+    # A single 'limits' value must appear identically for every axis.
     assert pos.limits == {
         "x": [-0.004, 0.004],
         "y": [-0.004, 0.004],
@@ -38,7 +54,7 @@ def test_per_axis_table_is_keyed_by_axis():
     dac = spec.channel("dac")
     assert dac.range is not None and dac.safe_range is not None
     assert set(dac.range) == {"x", "y", "z"}
-    assert dac.safe_range["z"] == [-8.0, 8.0]
+    assert dac.safe_range["z"] == [-737.25, 737.25]
 
 
 def test_label_expansion_is_axis_major():
@@ -56,7 +72,9 @@ def test_label_expansion_is_axis_major():
 
 def test_full_input_expansion_matches_legacy_15():
     spec = SystemSpec.from_toml(DELTABOT)
-    labels = spec.labels(["position", "velocity", "acceleration", "jerk", "dac"])
+    labels = spec.labels(
+        ["position", "velocity", "acceleration", "jerk", "dac"]
+    )
     assert len(labels) == 15
     assert labels[:5] == ["x_pos", "x_vel", "x_acc", "x_jer", "x_DAC_real"]
 
@@ -81,7 +99,10 @@ def test_per_axis_key_mismatch_rejected():
                 "name": "s",
                 "axes": ["x", "y"],
                 "channels": {
-                    "dac": {"kind": "command", "range": {"x": [-1, 1]}},  # missing y
+                    "dac": {
+                        "kind": "command",
+                        "range": {"x": [-1, 1]},
+                    },  # missing y
                 },
             }
         )
@@ -151,7 +172,9 @@ def test_non_per_axis_channel_label_ignores_axis():
 
 @given(
     st.lists(
-        st.sampled_from(["position", "velocity", "acceleration", "jerk", "dac"]),
+        st.sampled_from(
+            ["position", "velocity", "acceleration", "jerk", "dac"]
+        ),
         min_size=1,
         max_size=5,
         unique=True,

@@ -18,6 +18,7 @@ dependencies = [
     "h5py",
     "pandas",
     "prompt_toolkit",
+    "questionary",
     "typer",
 ] # Add project dependencies here, e.g. ["click", "numpy"]
 dynamic = ["version"]
@@ -85,7 +86,10 @@ data_file = "/tmp/nn_motion_control.coverage"
 omit = [
     "*/training/trainer.py",
     "*/training/run.py",
+    "*/training/control_run.py",
     "*/training/logging_setup.py",
+    "*/control/track.py",
+    "*/cli/select.py",
     "*/data/loaders.py",
     "*/eval/evaluate.py",
     "*/__main__.py",
@@ -183,7 +187,7 @@ commands = [
 
 [tool.ruff]
 src = ["src", "tests"]
-line-length = 88
+line-length = 80
 lint.select = [
     "B",   # flake8-bugbear - https://docs.astral.sh/ruff/rules/#flake8-bugbear-b
     "C4",  # flake8-comprehensions - https://docs.astral.sh/ruff/rules/#flake8-comprehensions-c4

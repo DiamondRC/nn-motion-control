@@ -1,0 +1,45 @@
+{
+  "model_name": "deltabot_controller_10k",
+  "system": "../system.toml",
+  "run": { "out_dir": "../runs", "seed": 42 },
+  "plant": {
+    "config": "plant_tcn_rollout.json",
+    "checkpoint": "../runs/deltabot_plant_tcn_rollout/deltabot_plant_tcn_rollout.pth"
+  },
+  "controller": {
+    "features": ["position", "velocity", "reference", "reference_velocity"],
+    "hidden": [128, 128],
+    "quant": [
+      { "weight_bits": 16, "act_bits": 48 },
+      { "weight_bits": 16, "act_bits": 16 },
+      { "weight_bits": 16, "act_bits": 16 }
+    ],
+    "servo_rate_hz": 10000,
+    "training": {
+      "horizon": 32,
+      "curriculum_start": 16,
+      "curriculum_ramp": 8,
+      "tracking_weight": 1.0,
+      "velocity_weight": 0.0,
+      "effort_weight": 1e-3,
+      "rate_weight": 1e-3,
+      "huber_delta": 100.0,
+      "reference": {
+        "kind": "spiral",
+        "radius": 1000.0,
+        "angular_step": 0.0031416,
+        "xy": [0, 1],
+        "z_rate": 30.0
+      },
+      "seed_quiescence": { "max_dac": 20.0, "max_speed": 2.0 },
+      "start_stride": 4,
+      "val_start_stride": 32
+    },
+    "batch_size": 256,
+    "max_epochs": 40,
+    "patience": 12,
+    "min_delta": 1e-3,
+    "learning_rate": 3e-3,
+    "optimiser": "Adam"
+  }
+}

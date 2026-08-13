@@ -1,0 +1,18 @@
+{
+  "plant": {
+    "model": "deltabot_plant_tcn_rollout",
+    "config": "configs/plant_tcn_rollout.json",
+    "checkpoint": "runs/deltabot_plant_tcn_rollout/deltabot_plant_tcn_rollout.pth",
+    "promoted": "2026-08-11",
+    "metric": "P95 position drift within the 5% gate to step 128",
+    "note": "M1 rollout champion (full 15-epoch free-run recipe)"
+  },
+  "controller": {
+    "model": "deltabot_controller_10k_general",
+    "config": "configs/controller_10k_general.json",
+    "checkpoint": "runs/deltabot_controller_10k_general/deltabot_controller_10k_general.pth",
+    "promoted": "2026-08-13",
+    "metric": "x/y P50 ~0.8 nm, z P50 ~2.5 nm (RMS over horizon 96, reanchor 1)",
+    "note": "generalist: randomised trajectory distribution + horizon curriculum"
+  }
+}

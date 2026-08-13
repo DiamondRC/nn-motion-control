@@ -38,8 +38,24 @@ framework itself is instance-agnostic. See `MILESTONES.md` for the roadmap
   specs compact). VS Code's built-in JSON formatter is disabled for JSON — don't re-enable it.
 - Tooling: `uv` (env/lock), `ruff` (lint+format), `pyright`, `prettier` (JSON) — all wired
   into `pre-commit` and `.github/workflows/ci.yml`.
-- Python house style: docstring summary on its own line with a blank line after;
-  capitalised error/validation messages.
+- **Code & comment style** (agreed 2026-08-13):
+  - Line length **80** for everything — code, comments, docstrings (`ruff line-length = 80`).
+  - Docstrings **only when they add non-obvious information** (a contract, units, an
+    invariant, a gotcha); if name + signature + types make intent obvious, omit it. When
+    present: summary line, then a blank line.
+  - **No** backticks, ALL-CAPS emphasis, emoji/emoticons, or decorative ASCII in comments
+    or docstrings. Refer to a variable in prose in single quotes (`'s'`, `'W'`), never with
+    a backtick. Prefer commas over semicolons in prose (colons are fine).
+  - Comments explain **why**, never restate what the code already says.
+  - **No internal chatter**: no milestone tags (M0–M5), no planned/deferred/TODO/future
+    notes, no progress narration ("we", "for now", "next step"). Keep the domain term
+    "checkpoint" (the saved model bundle).
+  - Capitalised error/validation messages.
+  - Blank line **above every `for`/`while` loop**. Blank line **before a `return`/`yield`
+    that closes a multi-statement block**, but not when it is the lone statement of a tight
+    `if`/`for`.
+  - **No magic numbers** — name them (module constant or config-derived).
+  - If it fits in one readable line, do that; do not over-engineer.
 
 ## Working agreement
 - **Start of a session:** read `HANDOFF.md` (current state) and `MILESTONES.md` (status).

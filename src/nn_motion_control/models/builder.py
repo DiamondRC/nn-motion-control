@@ -23,12 +23,13 @@ class ModelComponents:
             "Flatten": {"cls": nn.Flatten, "temporal": False},
             "LayerNorm": {"cls": nn.LayerNorm, "temporal": False},
             # Expects input shape [batch, features, time]
-            "AdaptiveAvgPool1d": {"cls": nn.AdaptiveAvgPool1d, "temporal": True},
+            "AdaptiveAvgPool1d": {
+                "cls": nn.AdaptiveAvgPool1d,
+                "temporal": True,
+            },
             "LastFrame": {"cls": LastFrame, "temporal": True},
             "AvgPoolLastK": {"cls": AvgPoolLastK, "temporal": True},
             "Conv1d": {"cls": nn.Conv1d, "temporal": True},
-            "LSTM": {"cls": nn.LSTM, "temporal": True},
-            "GRU": {"cls": nn.GRU, "temporal": True},
             # Custom
             "TemporalConv": {"cls": TemporalBlock, "temporal": True},
             # Recurrent (streams via a carried state, not a windowed conv)
@@ -40,28 +41,32 @@ class ModelComponents:
         entry = self.registry.get(name)
         if entry is None:
             raise ValueError(f"Unsupported layer {name}.")
+
         return entry["cls"]
 
     def is_temporal(self, name: str) -> bool:
         entry = self.registry.get(name)
         if entry is None:
             raise ValueError(f"Unsupported layer {name}.")
+
         return entry["temporal"]
 
     def is_recurrent(self, name: str) -> bool:
         entry = self.registry.get(name)
         if entry is None:
             raise ValueError(f"Unsupported layer {name}.")
+
         return entry.get("recurrent", False)
 
 
 class JsonModel(nn.Module):
     """
-    A feed-forward network assembled from a JSON ``hidden_layers`` spec.
+    A feed-forward network assembled from a JSON hidden_layers spec.
 
-    Temporal vs MLP mode is auto-detected from the first layer. For a windowed MLP the
-    first Linear's in-features are scaled by the window size (the window is flattened
-    in ``forward``); temporal models consume ``[B, C, T]`` directly.
+    Temporal vs MLP mode is auto-detected from the first layer. For a
+    windowed MLP the first Linear's in-features are scaled by the
+    window size (the window is flattened in forward). Temporal models
+    consume [B, C, T] directly.
     """
 
     def __init__(self, config: RunConfiguration):
@@ -69,15 +74,14 @@ class JsonModel(nn.Module):
 
         self.logging: bool = self.c.do_verb_log
         self.hidden_layers: list[dict[type[nn.Module], list[int] | None]] = []
-        # When set, temporal forward runs channels-last (see enable_channels_last).
+        # When set, temporal forward runs channels-last (see
+        # enable_channels_last).
         self.use_channels_last = False
 
-        # Model config
         super().__init__()
         self._build_model()
         self.apply(self._init_weights)
 
-    # Constructs the model based on the provided config
     def _build_model(self):
         output_size = self.c.target_size
         window_size = self.c.window_size
@@ -95,11 +99,12 @@ class JsonModel(nn.Module):
         layers = []
         components = ModelComponents()
 
-        # Normalise every layer spec to a (name, args) pair. A bare string such as
-        # "ReLU" is shorthand for a layer with no constructor args; a single-key dict
-        # {"Linear": [15, 2048]} carries positional args. Anything else is an error
-        # (previously non-dict entries were silently dropped, so string activations
-        # vanished from the model).
+        # Normalise each layer spec to a (name, args) pair. A bare
+        # string such as "ReLU" is shorthand for a layer with no
+        # constructor args, a single-key dict such as
+        # {"Linear": [15, 2048]} carries positional args. Anything else
+        # is an error (previously non-dict entries were silently
+        # dropped, so string activations vanished from the model).
         def _as_name_args(layer):
             if isinstance(layer, str):
                 return layer, []
@@ -107,19 +112,23 @@ class JsonModel(nn.Module):
                 name, args = next(iter(layer.items()))
                 return name, list(args) if args else []
             raise TypeError(
-                f"Unsupported layer spec {layer!r}; expected a str or single-key dict."
+                f"Unsupported layer spec {layer!r}; expected a str or "
+                f"single-key dict."
             )
 
-        # Auto-detect whether we operate on time-major data (based on the first layer)
+        # Temporal vs MLP mode is inferred from the first layer.
         first_name, _ = _as_name_args(self.c.hidden_layers[0])
         self.is_temporal_model = components.is_temporal(first_name)
-        # A recurrent (SSM) stack is time-major but streams via a carried state, so it
-        # gets its own forward branch (transpose to [B, T, C], run the scan, then head).
+        # A recurrent (SSM) stack is time-major but streams via a
+        # carried state, so it gets its own forward branch (transpose to
+        # [B, T, C], run the scan, then head).
         self.is_ssm = components.is_recurrent(first_name)
 
         for idx, layer in enumerate(self.c.hidden_layers):
             name, args = _as_name_args(layer)
-            layer_class = components.get(name)  # validates the layer is supported
+            layer_class = components.get(
+                name
+            )  # validates the layer is supported
 
             if (
                 name == "Linear"
@@ -127,8 +136,9 @@ class JsonModel(nn.Module):
                 and idx == 0
                 and window_size != 1
             ):
-                # MLP path flattens [B, features, window] -> [B, features * window]
-                # in forward(), so the first Linear must accept in_features * window.
+                # MLP path flattens [B, features, window] to
+                # [B, features * window] in forward(), so the first
+                # Linear must accept in_features * window.
                 layers.append(layer_class(args[0] * window_size, *args[1:]))
             else:
                 layers.append(layer_class(*args))
@@ -137,52 +147,65 @@ class JsonModel(nn.Module):
 
         if self.logging:
             logger.debug("Model configuration:")
+
             for layer in self.network:
                 logger.debug(f"{layer}")
 
     def _init_weights(self, m):
         if isinstance(m, nn.Linear):
-            # nn.init.xavier_normal_(m.weight, gain=0.5)  # ReLU scaling
-            nn.init.kaiming_normal_(m.weight, nonlinearity="relu")  # He initialization
+            nn.init.kaiming_normal_(
+                m.weight, nonlinearity="relu"
+            )  # He initialization
             if m.bias is not None:
                 nn.init.zeros_(m.bias)
 
     def enable_channels_last(self) -> None:
         """
-        Run the temporal forward channels-last (identical maths, no NHWC transposes).
+        Run the temporal forward channels-last (identical maths, no NHWC
+        transposes).
 
-        Only valid for a channels-last-able TemporalConv stack; raises otherwise.
+        Only valid for a channels-last-able TemporalConv stack, raises
+        otherwise.
         """
 
         from nn_motion_control.models.channels_last import is_channels_last_able
 
         if not (self.is_temporal_model and is_channels_last_able(self.network)):
-            raise ValueError("Model is not a channels-last-able TemporalConv stack")
+            raise ValueError(
+                "Model is not a channels-last-able TemporalConv stack"
+            )
         self.use_channels_last = True
 
     def ssm_section(self) -> tuple[list[nn.Module], list[nn.Module]]:
         """
-        Split the network into the leading ``DiagSSM`` layers and the trailing head.
+        Split the network into the leading DiagSSM layers and the
+        trailing head.
 
-        The SSM layers run time-major (``[B,T,C]``); the head (pool/flatten/Linear) runs
-        channel-major (``[B,C,T]``) exactly like the TCN head. Used by the SSM forward
-        branch and by the recurrent rollout stepper so both see the same split.
+        The SSM layers run time-major ([B, T, C]), the head
+        (pool/flatten/Linear) runs channel-major ([B, C, T]) exactly
+        like the TCN head. Used by the SSM forward branch and by the
+        recurrent rollout stepper so both see the same split.
         """
 
         layers = list(self.network)
         n = 0
+
         while n < len(layers) and isinstance(layers[n], DiagSSM):
             n += 1
+
         return layers[:n], layers[n:]
 
     def _ssm_forward(self, x):
         ssm_layers, head_layers = self.ssm_section()
         u = x.transpose(1, 2)  # [B, C, T] -> [B, T, C]
+
         for layer in ssm_layers:
             u = layer(u)
         out = u.transpose(1, 2)  # back to [B, C, T] for the head
+
         for layer in head_layers:
             out = layer(out)
+
         return out
 
     def forward(self, x):

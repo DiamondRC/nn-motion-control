@@ -983,6 +983,7 @@ dependencies = [
     { name = "numpy" },
     { name = "pandas" },
     { name = "prompt-toolkit" },
+    { name = "questionary" },
     { name = "typer" },
 ]
 
@@ -1011,6 +1012,7 @@ requires-dist = [
     { name = "numpy" },
     { name = "pandas" },
     { name = "prompt-toolkit" },
+    { name = "questionary" },
     { name = "typer" },
 ]
 

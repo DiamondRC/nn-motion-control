@@ -1,4 +1,7 @@
-"""Channels-last TCN forward: capability detection + equivalence to the conv1d path."""
+"""Channels-last TCN forward.
+
+Capability detection and equivalence to the conv1d path.
+"""
 
 import torch
 import torch.nn as nn
@@ -23,11 +26,15 @@ def test_tcn_stack_is_channels_last_able():
 
 def test_non_tcn_stack_is_not_able():
     # No AdaptiveAvgPool1d -> not handled; caller must fall back.
-    assert not is_channels_last_able(nn.Sequential(nn.Flatten(), nn.Linear(10, 3)))
+    assert not is_channels_last_able(
+        nn.Sequential(nn.Flatten(), nn.Linear(10, 3))
+    )
 
 
 def test_channels_last_matches_conv1d_in_eval():
-    m = _tcn().eval()  # eval -> dropout off, so both paths match to float rounding
+    m = (
+        _tcn().eval()
+    )  # eval -> dropout off, so both paths match to float rounding
     torch.manual_seed(0)
     window = torch.randn(4, 9, 64)
     with torch.no_grad():

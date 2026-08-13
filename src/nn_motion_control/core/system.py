@@ -51,11 +51,25 @@ class ChannelSpec:
     range: dict[str, list[float]] | None = None
     safe_range: dict[str, list[float]] | None = None
 
+    def __post_init__(self):
+        # A per-axis template without {axis} would str.format to the same
+        # label for every axis (str.format ignores unused kwargs), silently
+        # collapsing distinct per-axis columns into one. Catch the typo at
+        # construction.
+        if self.per_axis and "{axis}" not in self.label_template:
+            raise ValueError(
+                f"Per-axis channel '{self.name}' label_template must contain "
+                f"'{{axis}}', got {self.label_template!r}"
+            )
+
     def label(self, axis: str | None = None) -> str:
         if not self.per_axis:
             return self.name
         if axis is None:
-            raise ValueError(f"channel '{self.name}' is per-axis; an axis is required")
+            raise ValueError(
+                f"Channel '{self.name}' is per-axis; an axis is required"
+            )
+
         return self.label_template.format(axis=axis, name=self.name)
 
 
@@ -98,6 +112,7 @@ class SystemSpec:
                 )
 
         target = raw.get("target", {})
+
         return cls(
             name=raw["name"],
             axes=axes,
@@ -124,10 +139,12 @@ class SystemSpec:
         Axis-major means each axis's selected channels are contiguous.
         """
         out: list[str] = []
+
         for axis in self.axes:
             for name in channel_names:
                 ch = self.channel(name)
                 out.append(ch.label(axis if ch.per_axis else None))
+
         return out
 
     def clocks_per_step(self) -> float | None:
@@ -137,24 +154,28 @@ class SystemSpec:
 
         if self.clock_hz and self.servo_rate_hz:
             return self.clock_hz / self.servo_rate_hz
+
         return None
 
     def control_substeps(self) -> float | None:
         """
         Control steps per data step, if both rates are known.
 
-        The plant is identified at ``data_rate_hz`` (the native rate of the logs),
-        while the controller runs at ``servo_rate_hz``. The ratio is how many
-        control decisions occur within a single plant-observable transition — the
-        deployment-time reconciliation of the two rates is an M2 concern.
+        The plant is identified at 'data_rate_hz' (the native rate of the
+        logs), while the controller runs at 'servo_rate_hz'. The ratio is how
+        many control decisions occur within a single plant-observable
+        transition.
         """
 
         if self.servo_rate_hz and self.data_rate_hz:
             return self.servo_rate_hz / self.data_rate_hz
+
         return None
 
 
-def _build_channel(name: str, spec: dict[str, Any], axes: list[str]) -> ChannelSpec:
+def _build_channel(
+    name: str, spec: dict[str, Any], axes: list[str]
+) -> ChannelSpec:
     kind = spec.get("kind")
     if kind not in _KINDS:
         raise ValueError(
@@ -165,6 +186,7 @@ def _build_channel(name: str, spec: dict[str, Any], axes: list[str]) -> ChannelS
         value = spec.get(field)
         if value is None:
             return None
+
         return _as_per_axis(value, axes, channel=name, field=field)
 
     return ChannelSpec(

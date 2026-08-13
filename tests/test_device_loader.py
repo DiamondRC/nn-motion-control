@@ -1,5 +1,6 @@
 """
-DeviceWindowLoader: parity with per-item __getitem__, batching, shuffle determinism.
+DeviceWindowLoader: parity with per-item __getitem__, batching,
+shuffle determinism.
 """
 
 import numpy as np
@@ -15,7 +16,9 @@ from nn_motion_control.data.splits import (
 
 INPUTS_15 = [lbl for lbl in INPUT_LABELS if lbl != "timestep"]
 TARGETS_12 = [
-    lbl for lbl in TARGET_LABELS if lbl.endswith("_nxt") and lbl != "timestep_nxt"
+    lbl
+    for lbl in TARGET_LABELS
+    if lbl.endswith("_nxt") and lbl != "timestep_nxt"
 ]
 
 WINDOW = 5
@@ -42,13 +45,16 @@ def test_batches_match_per_item_getitem(synth_h5):
     loader = DeviceWindowLoader(
         gin, gtg, torch.as_tensor(train), WINDOW, batch_size=8, device="cpu"
     )
-    # Flatten the loader's batches back to per-window rows (no shuffle -> same order).
+    # Flatten the loader's batches back to per-window rows (no
+    # shuffle, same order).
     xs, ys = [], []
+
     for x, y in loader:
         xs.append(x)
         ys.append(y)
     x_all, y_all = torch.cat(xs), torch.cat(ys)
     assert x_all.shape == (len(train), len(INPUTS_15), WINDOW)
+
     for k, start in enumerate(train):
         x_ref, y_ref = ds[int(start)]  # normalised per-item [F_in, W], [F_tgt]
         assert torch.allclose(x_all[k], x_ref, atol=1e-6)

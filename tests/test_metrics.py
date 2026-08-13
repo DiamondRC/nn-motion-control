@@ -1,4 +1,4 @@
-"""Metrics/denorm tests (Workstream C): the reshape must map state k -> row k and
+"""Metrics/denorm tests: the reshape must map state k to row k and
 normalize/denormalize must round-trip.
 """
 
@@ -13,12 +13,15 @@ from nn_motion_control.data.ingest import (
 
 INPUTS_15 = [lbl for lbl in INPUT_LABELS if lbl != "timestep"]
 TARGETS_12 = [
-    lbl for lbl in TARGET_LABELS if lbl.endswith("_nxt") and lbl != "timestep_nxt"
+    lbl
+    for lbl in TARGET_LABELS
+    if lbl.endswith("_nxt") and lbl != "timestep_nxt"
 ]
 
 
 def test_reshape_maps_state_to_row():
-    # 3 samples x 2 states, flattened sample-major (as collected in the test loop).
+    # 3 samples x 2 states, flattened sample-major (as collected in
+    # the test loop).
     per_sample = np.array([[10, 20], [11, 21], [12, 22]])
     flat = per_sample.flatten()
 

@@ -1,5 +1,6 @@
 """
-Normalisation primitives: identity on masked columns + normalise/denormalise round-trip.
+Normalisation primitives: identity on masked columns and
+normalise/denormalise round-trip.
 """
 
 import numpy as np

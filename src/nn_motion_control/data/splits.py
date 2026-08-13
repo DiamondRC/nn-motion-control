@@ -1,9 +1,11 @@
 """
-Label validation and leakage-aware train/val/test splitting of window starts.
+Label validation and leakage-aware train/val/test splitting of window
+starts.
 
-A *window start* is a row that can begin a full window inside a single recording.
-Splitting operates on these start rows, inserting a ``window_size - 1`` gap at each
-seam so a training window's target row cannot reach into the validation range.
+A window start is a row that can begin a full window inside a single
+recording. Splitting operates on these start rows, inserting a
+'window_size - 1' gap at each seam so a training window's target row cannot
+reach into the validation range.
 """
 
 from __future__ import annotations
@@ -31,6 +33,7 @@ def validate_labels(
             f"Invalid {kind} labels: {missing}. "
             f"Available {kind} labels: {list(available)}"
         )
+
     return [mapping[x] for x in requested]
 
 
@@ -40,15 +43,17 @@ def build_valid_window_starts(
     """
     Return every row that can start a full window within a single recording.
 
-    Segment ``k`` spans rows ``[segment_offsets[k], segment_offsets[k+1])``; a window
-    starting at ``s`` occupies ``[s, s + window_size)`` and must stay inside that span,
-    so no window ever straddles two recordings. For a rollout of ``horizon`` future
-    steps the sample also reads rows ``[s + window_size, s + window_size + horizon)``,
-    so ``horizon`` extra rows are reserved at the tail of each recording.
+    Segment 'k' spans rows [segment_offsets[k], segment_offsets[k+1]); a
+    window starting at 's' occupies [s, s + window_size) and must stay
+    inside that span, so no window ever straddles two recordings. For a
+    rollout of 'horizon' future steps the sample also reads rows
+    [s + window_size, s + window_size + horizon), so 'horizon' extra rows
+    are reserved at the tail of each recording.
     """
 
     reserve = window_size + horizon
     starts: list[np.ndarray] = []
+
     for k in range(len(segment_offsets) - 1):
         s = int(segment_offsets[k])
         e = int(segment_offsets[k + 1])
@@ -57,14 +62,18 @@ def build_valid_window_starts(
             starts.append(np.arange(s, last_start + 1, dtype=np.int64))
         else:
             logger.warning(
-                "Segment %d (length %d) is shorter than window+horizon=%d; skipped",
+                "Segment %d (length %d) is shorter than "
+                "window+horizon=%d; skipped",
                 k,
                 e - s,
                 reserve,
             )
 
     if not starts:
-        raise ValueError(f"No recording is long enough for window+horizon={reserve}")
+        raise ValueError(
+            f"No recording is long enough for window+horizon={reserve}"
+        )
+
     return np.concatenate(starts)
 
 
@@ -85,11 +94,13 @@ def split_window_starts_contiguous(
     horizon: int = 0,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
-    Contiguous split of ordered window starts with a leakage gap at each seam.
+    Contiguous split of ordered window starts with a leakage gap at each
+    seam.
 
-    After the ratio split, the last ``window_size + horizon - 1`` starts of train and
-    of val are dropped so a training sample's furthest-reached row (target, or the last
-    rollout step) cannot fall into the validation range (and val cannot reach test).
+    After the ratio split, the last 'window_size + horizon - 1' starts of
+    train and of val are dropped so a training sample's furthest-reached
+    row (target, or the last rollout step) cannot fall into the validation
+    range (and val cannot reach test).
     """
 
     _validate_ratios(train_ratio, val_ratio)
@@ -114,6 +125,7 @@ def split_window_starts_contiguous(
             "A split is empty after applying the window gap; "
             "reduce window_size or adjust the split ratios"
         )
+
     return train_idx, val_idx, test_idx
 
 
@@ -124,10 +136,10 @@ def split_window_starts_random(
     seed: int,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
-    Randomised split for non-windowed data (``window_size == 1``).
+    Randomised split for non-windowed data ('window_size == 1').
 
-    Each sample is a single independent row, so a random split introduces no window
-    overlap and needs no gap.
+    Each sample is a single independent row, so a random split introduces
+    no window overlap and needs no gap.
     """
 
     _validate_ratios(train_ratio, val_ratio)

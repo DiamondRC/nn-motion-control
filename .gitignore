@@ -89,6 +89,12 @@ node_modules/
 # temp
 actor_critic.py
 
+# CLI interactive-picker remembered settings
+.nnmc_prefs.json
+
 # Claude
 HANDOFF.md
 MILESTONES.md
+
+# other
+info/

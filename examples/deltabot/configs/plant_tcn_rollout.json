@@ -55,6 +55,6 @@
     "out_dir": "../runs",
     "verbose_logging": true,
     "compile": true,
-    "init_checkpoint": "../runs/deltabot_plant_tcn.pth"
+    "init_checkpoint": "../runs/deltabot_plant_tcn/deltabot_plant_tcn.pth"
   }
 }
