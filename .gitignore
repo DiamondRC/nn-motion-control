@@ -83,8 +83,18 @@ examples/*/reports/
 *.h5
 logs/
 
-# Node (dev tooling: Prettier)
+# Node / Prettier dev tooling.
 node_modules/
+.prettiercache
+.npm/
+npm-debug.log*
+yarn-error.log*
+
+# Editor / OS
+.DS_Store
+*.swp
+*~
+.idea/workspace.xml
 
 # temp
 actor_critic.py
@@ -95,6 +105,7 @@ actor_critic.py
 # Claude
 HANDOFF.md
 MILESTONES.md
+CLAUDE.md
 
 # other
 info/

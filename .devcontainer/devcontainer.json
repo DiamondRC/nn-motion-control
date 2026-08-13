@@ -53,7 +53,7 @@
     }
   },
   // Also add:
-  "workspaceFolder": "/workspaces/deltabot_nn_controller",
+  "workspaceFolder": "/workspaces/nn_motion_control",
   // Create the config folder for the bash-config feature and uv cache
   "initializeCommand": "mkdir -p ${localEnv:HOME}/.config/terminal-config ${localEnv:HOME}/.config/devcontainer-claude-config",
   "runArgs": [
@@ -110,5 +110,5 @@
   // missing. CLAUDE_CONFIG_DIR is pinned so init targets the persistent config dir
   // (postCreateCommand does not reliably inherit remoteEnv); telemetry is pre-disabled
   // so a fresh config never prompts. Guarded to a no-op if rtk is absent.
-  "postCreateCommand": "cd /workspaces/deltabot_nn_controller && uv sync && { [ -f package.json ] && npm install --no-audit --no-fund || true; } && { [ -f /user-terminal-config/claude/install-statusline.sh ] && bash /user-terminal-config/claude/install-statusline.sh || true; } && { command -v rtk >/dev/null 2>&1 && { rtk telemetry disable >/dev/null 2>&1; CLAUDE_CONFIG_DIR=/claude-config rtk init -g --auto-patch >/dev/null 2>&1; } || true; }"
+  "postCreateCommand": "cd /workspaces/nn_motion_control && uv sync && { [ -f package.json ] && npm install --no-audit --no-fund || true; } && { [ -f /user-terminal-config/claude/install-statusline.sh ] && bash /user-terminal-config/claude/install-statusline.sh || true; } && { command -v rtk >/dev/null 2>&1 && { rtk telemetry disable >/dev/null 2>&1; CLAUDE_CONFIG_DIR=/claude-config rtk init -g --auto-patch >/dev/null 2>&1; } || true; }"
 }

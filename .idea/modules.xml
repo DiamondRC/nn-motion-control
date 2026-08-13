@@ -2,7 +2,7 @@
 <project version="4">
   <component name="ProjectModuleManager">
     <modules>
-      <module fileurl="file://$PROJECT_DIR$/.idea/deltabot_nn_controller.iml" filepath="$PROJECT_DIR$/.idea/deltabot_nn_controller.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/nn_motion_control.iml" filepath="$PROJECT_DIR$/.idea/nn_motion_control.iml" />
     </modules>
   </component>
 </project>

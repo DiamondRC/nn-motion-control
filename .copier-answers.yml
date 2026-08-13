@@ -3,14 +3,14 @@ _commit: 5.0.2
 _src_path: https://github.com/DiamondLightSource/python-copier-template.git
 author_email: richard.cunningham@diamond.ac.uk
 author_name: Richard Cunningham
-description: A Neural Network to control the motion of the Deltabot stage.
-distribution_name: deltabot-nn-controller
+description: A framework for neural-network motion controllers that deploy to FPGA.
+distribution_name: nn-motion-control
 docker: false
 docs_type: sphinx
 git_platform: github.com
 github_org: DiamondRC
-package_name: deltabot_nn_controller
+package_name: nn_motion_control
 pypi: true
-repo_name: deltabot-nn-controller
+repo_name: nn-motion-control
 strict_typing: false
 type_checker: pyright

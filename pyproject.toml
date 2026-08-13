@@ -11,7 +11,7 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
 ]
-description = "A Neural Network to control the motion of the Deltabot stage."
+description = "A framework for neural-network motion controllers that deploy to FPGA."
 dependencies = [
     "numpy",
     "matplotlib",
