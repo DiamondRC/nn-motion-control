@@ -1,10 +1,14 @@
 """Randomised trajectory families: anchoring, shapes, PVT, reproducibility."""
 
+import pytest
 import torch
 
 from nn_motion_control.control.trajectories import (
+    build_family,
     line_family,
+    morph_family,
     sample_mixed_reference,
+    sequence_reference,
     spiral_family,
     step_family,
 )
@@ -106,3 +110,80 @@ def test_mixed_weights_can_select_a_single_family():
     # (zero end velocity).
     _, vel = sample_mixed_reference(origin, H, {"weights": [0, 0, 1, 0]}, g)
     assert torch.allclose(vel[:, -1, :], torch.zeros(B, A), atol=1e-4)
+
+
+def test_build_family_anchors_and_is_reproducible():
+    origin = _origin()
+    k = torch.arange(H, dtype=torch.float32)
+
+    for name in ("spiral", "helix", "line", "step", "smooth"):
+        a, _ = build_family(
+            name, origin, k, {}, torch.Generator().manual_seed(3)
+        )
+        b, _ = build_family(
+            name, origin, k, {}, torch.Generator().manual_seed(3)
+        )
+        assert a.shape == (B, H, A)
+        assert torch.allclose(a[:, 0, :], origin, atol=1e-3)  # anchored
+        assert torch.equal(a, b)  # same seed -> identical draw
+
+
+def test_build_family_unknown_name_raises():
+    origin = torch.zeros(B, A)
+    k = torch.arange(H, dtype=torch.float32)
+    with pytest.raises(ValueError, match="Unknown trajectory family"):
+        build_family("bogus", origin, k, {}, None)
+
+
+def test_helix_ramps_z_where_spiral_default_may_not():
+    origin = torch.zeros(B, A)
+    k = torch.arange(H, dtype=torch.float32)
+    pos, _ = build_family(
+        "helix", origin, k, {}, torch.Generator().manual_seed(2)
+    )
+    # A helix always climbs (forced non-zero z ramp on the third axis).
+    assert (pos[:, -1, 2] - origin[:, 2]).abs().min() > 1.0
+
+
+def test_morph_family_anchored_and_velocity_matches_fd():
+    origin = _origin()
+    g = torch.Generator().manual_seed(8)
+    # Pin params low so the analytic velocity (with the blend cross term)
+    # matches a finite difference of the blended position.
+    spec = {
+        "radius": [300.0, 300.0],
+        "angular": [0.003, 0.003],
+        "z_rate": [0.0, 0.0],
+        "smooth_amp": [50.0, 50.0],
+    }
+    pos, vel = morph_family(origin, H, "spiral", "smooth", spec, g)
+    assert pos.shape == (B, H, A)
+    assert torch.allclose(pos[:, 0, :], origin, atol=1e-3)  # both anchored
+    fd = pos[:, 1:, :] - pos[:, :-1, :]
+    assert torch.allclose(vel[:, :-1, :], fd, atol=1.5)
+
+
+def test_sequence_reference_length_and_seam_continuity():
+    origin = _origin()
+    g = torch.Generator().manual_seed(9)
+    pos, _ = sequence_reference(origin, 30, ["spiral", "line", "step"], {}, g)
+    assert pos.shape == (B, 30, A)
+    assert torch.allclose(pos[:, 0, :], origin, atol=1e-3)
+    # An even split gives seams at 10 and 20; position is continuous there.
+    for seam in (10, 20):
+        assert torch.allclose(pos[:, seam, :], pos[:, seam - 1, :], atol=1e-3)
+
+
+def test_sequence_reference_rejects_mismatched_durations():
+    origin = torch.zeros(B, A)
+    g = torch.Generator().manual_seed(1)
+    with pytest.raises(ValueError, match="must sum to the horizon"):
+        sequence_reference(
+            origin, 30, ["spiral", "line"], {}, g, durations=[10, 5]
+        )
+
+
+def test_sequence_reference_empty_segments_raises():
+    origin = torch.zeros(B, A)
+    with pytest.raises(ValueError, match="at least one segment"):
+        sequence_reference(origin, 30, [], {}, None)

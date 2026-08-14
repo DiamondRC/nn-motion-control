@@ -9,16 +9,40 @@ on the origin, the controller tracks from its current state, and each sample
 draws its own params, so one batch spans many trajectories.
 
 sample_mixed_reference picks a family per sample by weight and returns the
-blend. Pass a seeded generator for reproducible validation, None for fresh
-training.
+blend. morph_family interpolates one shape into another across the horizon;
+sequence_reference concatenates shape segments in time. Pass a seeded
+generator for reproducible draws (validation, seeded visualisation), None
+for fresh training randomness.
 """
 
 from __future__ import annotations
 
 import math
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 
 import torch
+
+# Default per-family parameter ranges (physical units: nm, rad/step,
+# nm/step); a spec may override any of them by key.
+SPIRAL_RADIUS_RANGE = (50.0, 1500.0)
+SPIRAL_ANGULAR_RANGE = (0.002, 0.03)
+SPIRAL_Z_RATE_RANGE = (-30.0, 30.0)
+# A helix forces a non-zero z ramp so the circle climbs; the flat-circle
+# (z rate 0) case is already reachable through the spiral family.
+HELIX_Z_RATE_RANGE = (10.0, 30.0)
+STEP_OFFSET_RANGE = (-1000.0, 1000.0)
+SMOOTH_AMP_RANGE = (0.0, 300.0)
+SMOOTH_COMPONENTS = 3
+# Smooth paths reach twice the spiral angular rate at the top end.
+SMOOTH_ANGULAR_SCALE = 2.0
+# Step-move timing as fractions of the horizon.
+STEP_START_MAX_FRAC = 0.4
+STEP_DURATION_MIN_FRAC = 0.15
+STEP_DURATION_MAX_FRAC = 0.6
+# Floor for a random direction's norm before normalising.
+DIRECTION_EPS = 1e-6
+# The four randomised families, in mix-weight order.
+FAMILY_NAMES = ("spiral", "line", "step", "smooth")
 
 
 def _u(lo, hi, shape, generator, device, dtype):
@@ -118,6 +142,87 @@ def random_smooth_family(origin, k, amps, angulars, phases):
     return pos, vel
 
 
+def build_family(
+    name: str,
+    origin: torch.Tensor,
+    k: torch.Tensor,
+    spec: Mapping,
+    generator: torch.Generator | None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Draw one randomised family with params from spec, returning (pos, vel).
+
+    'name' is one of FAMILY_NAMES plus 'helix' (a spiral with a forced
+    non-zero z ramp). The per-family ranges and draw order live here so the
+    mixer, morph and sequence all share one source of truth.
+    """
+
+    b, a = origin.shape
+    dev, dt = origin.device, origin.dtype
+
+    def u(lo, hi, shape):
+        return _u(lo, hi, shape, generator, dev, dt)
+
+    def rng(key, default):
+        r = spec.get(key, default)
+
+        return float(r[0]), float(r[1])
+
+    xy = tuple(int(v) for v in spec.get("xy", (0, 1)))
+    horizon = len(k)
+
+    if name in ("spiral", "helix"):
+        r_lo, r_hi = rng("radius", SPIRAL_RADIUS_RANGE)
+        w_lo, w_hi = rng("angular", SPIRAL_ANGULAR_RANGE)
+        z_default = (
+            HELIX_Z_RATE_RANGE if name == "helix" else SPIRAL_Z_RATE_RANGE
+        )
+        zr_lo, zr_hi = rng("z_rate", z_default)
+        sign = torch.where(u(0.0, 1.0, (b,)) < 0.5, -1.0, 1.0)
+
+        return spiral_family(
+            origin,
+            k,
+            u(r_lo, r_hi, (b,)),
+            sign * u(w_lo, w_hi, (b,)),
+            u(zr_lo, zr_hi, (b,)),
+            xy,
+        )
+    if name == "line":
+        r_lo, r_hi = rng("radius", SPIRAL_RADIUS_RANGE)
+        w_lo, w_hi = rng("angular", SPIRAL_ANGULAR_RANGE)
+        d = u(-1.0, 1.0, (b, a))
+        d = d / d.norm(dim=1, keepdim=True).clamp_min(DIRECTION_EPS)
+
+        return line_family(
+            origin, k, d, u(r_lo, r_hi, (b,)), u(w_lo, w_hi, (b,))
+        )
+    if name == "step":
+        st_lo, st_hi = rng("step", STEP_OFFSET_RANGE)
+        start = u(0.0, max(1.0, horizon * STEP_START_MAX_FRAC), (b,))
+        dur = u(
+            max(1.0, horizon * STEP_DURATION_MIN_FRAC),
+            max(2.0, horizon * STEP_DURATION_MAX_FRAC),
+            (b,),
+        )
+
+        return step_family(origin, k, u(st_lo, st_hi, (b, a)), start, dur)
+    if name == "smooth":
+        m = int(spec.get("components", SMOOTH_COMPONENTS))
+        a_lo, a_hi = rng("smooth_amp", SMOOTH_AMP_RANGE)
+        w_lo, w_hi = rng("angular", SPIRAL_ANGULAR_RANGE)
+
+        return random_smooth_family(
+            origin,
+            k,
+            u(a_lo, a_hi, (b, a, m)),
+            u(w_lo, w_hi * SMOOTH_ANGULAR_SCALE, (b, a, m)),
+            u(0.0, 2.0 * math.pi, (b, a, m)),
+        )
+
+    raise ValueError(f"Unknown trajectory family: {name!r}")
+
+
 def sample_mixed_reference(
     origin: torch.Tensor,
     horizon: int,
@@ -135,58 +240,13 @@ def sample_mixed_reference(
     """
 
     spec = dict(spec or {})
-    b, a = origin.shape
-    dev, dt = origin.device, origin.dtype
-    k = torch.arange(horizon, device=dev, dtype=dt)
-    gen = generator
+    b, _ = origin.shape
+    dev = origin.device
+    k = torch.arange(horizon, device=dev, dtype=origin.dtype)
 
-    def u(lo, hi, shape):
-        return _u(lo, hi, shape, gen, dev, dt)
-
-    def rng(key, lo, hi):
-        r = spec.get(key, (lo, hi))
-
-        return float(r[0]), float(r[1])
-
-    xy = tuple(int(v) for v in spec.get("xy", (0, 1)))
-
-    # Spiral: random radius, signed angular rate, z ramp.
-    r_lo, r_hi = rng("radius", 50.0, 1500.0)
-    w_lo, w_hi = rng("angular", 0.002, 0.03)
-    zr_lo, zr_hi = rng("z_rate", -30.0, 30.0)
-    sign = torch.where(u(0, 1, (b,)) < 0.5, -1.0, 1.0)
-    sp = spiral_family(
-        origin,
-        k,
-        u(r_lo, r_hi, (b,)),
-        sign * u(w_lo, w_hi, (b,)),
-        u(zr_lo, zr_hi, (b,)),
-        xy,
-    )
-
-    # Line scan: random unit direction, amplitude, rate.
-    d = u(-1.0, 1.0, (b, a))
-    d = d / d.norm(dim=1, keepdim=True).clamp_min(1e-6)
-    ln = line_family(origin, k, d, u(r_lo, r_hi, (b,)), u(w_lo, w_hi, (b,)))
-
-    # Step: random per-axis target offset, start time, duration.
-    st_lo, st_hi = rng("step", -1000.0, 1000.0)
-    start = u(0.0, max(1.0, horizon * 0.4), (b,))
-    dur = u(max(1.0, horizon * 0.15), max(2.0, horizon * 0.6), (b,))
-    stp = step_family(origin, k, u(st_lo, st_hi, (b, a)), start, dur)
-
-    # Random smooth: M sinusoids per axis.
-    m = int(spec.get("components", 3))
-    a_lo, a_hi = rng("smooth_amp", 0.0, 300.0)
-    rs = random_smooth_family(
-        origin,
-        k,
-        u(a_lo, a_hi, (b, a, m)),
-        u(w_lo, w_hi * 2.0, (b, a, m)),
-        u(0.0, 2.0 * math.pi, (b, a, m)),
-    )
-
-    families = [sp, ln, stp, rs]
+    families = [
+        build_family(name, origin, k, spec, generator) for name in FAMILY_NAMES
+    ]
     pos_stack = torch.stack([p for p, _ in families], dim=0)  # [F, B, H, A]
     vel_stack = torch.stack([v for _, v in families], dim=0)
     weights = torch.tensor(
@@ -194,7 +254,91 @@ def sample_mixed_reference(
         device=dev,
         dtype=torch.float32,
     )
-    fam = torch.multinomial(weights, b, replacement=True, generator=gen)  # [B]
+    fam = torch.multinomial(weights, b, replacement=True, generator=generator)
     idx = torch.arange(b, device=dev)
 
     return pos_stack[fam, idx], vel_stack[fam, idx]
+
+
+def morph_family(
+    origin: torch.Tensor,
+    horizon: int,
+    from_name: str,
+    to_name: str,
+    spec: Mapping,
+    generator: torch.Generator | None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Interpolate 'from_name' into 'to_name' across the horizon with a
+    smoothstep blend, returning (pos, vel).
+
+    Both endpoint families are anchored on the origin, so the morph is too.
+    Velocity is analytic: the blended velocities plus the blend's own rate
+    times the shape gap (the product-rule cross term).
+    """
+
+    dev = origin.device
+    k = torch.arange(horizon, device=dev, dtype=origin.dtype)
+    pos_a, vel_a = build_family(from_name, origin, k, spec, generator)
+    pos_b, vel_b = build_family(to_name, origin, k, spec, generator)
+    denom = max(horizon - 1, 1)
+    s = (k / denom).clamp(0.0, 1.0)  # [H]
+    w = (s * s * (3.0 - 2.0 * s))[None, :, None]
+    dw = (6.0 * s * (1.0 - s) / denom)[None, :, None]  # d weight / d step
+    pos = (1.0 - w) * pos_a + w * pos_b
+    vel = (1.0 - w) * vel_a + w * vel_b + dw * (pos_b - pos_a)
+
+    return pos, vel
+
+
+def _even_split(total: int, n: int) -> list[int]:
+    """Split total into n integer lengths differing by at most one."""
+
+    base, rem = divmod(total, n)
+
+    return [base + (1 if i < rem else 0) for i in range(n)]
+
+
+def sequence_reference(
+    origin: torch.Tensor,
+    horizon: int,
+    segments: Sequence[str],
+    spec: Mapping,
+    generator: torch.Generator | None,
+    durations: Sequence[int] | None = None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Concatenate family segments in time, returning (pos, vel).
+
+    Each segment is anchored on the previous segment's end position, so
+    position is continuous across the seams; velocity may step at a seam
+    because each family carries its own initial velocity. durations
+    (summing to the horizon) set the per-segment lengths, else the horizon
+    splits evenly.
+    """
+
+    if not segments:
+        raise ValueError("Sequence needs at least one segment")
+    if durations is None:
+        lengths = _even_split(horizon, len(segments))
+    else:
+        lengths = [int(d) for d in durations]
+        if sum(lengths) != horizon:
+            raise ValueError("Sequence durations must sum to the horizon")
+    dev = origin.device
+    pos_parts, vel_parts = [], []
+    anchor = origin
+
+    for name, length in zip(segments, lengths, strict=True):
+        if length <= 0:
+            continue
+        seg_k = torch.arange(length, device=dev, dtype=origin.dtype)
+        seg_pos, seg_vel = build_family(name, anchor, seg_k, spec, generator)
+        pos_parts.append(seg_pos)
+        vel_parts.append(seg_vel)
+        anchor = seg_pos[:, -1, :]  # next segment starts where this ended
+
+    if not pos_parts:
+        raise ValueError("Sequence produced no segments; check durations")
+
+    return torch.cat(pos_parts, dim=1), torch.cat(vel_parts, dim=1)

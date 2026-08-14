@@ -2,12 +2,10 @@
 Policy-gradient controller training through a frozen differentiable plant.
 
 The controller is trained by rolling the plant forward under the
-controller's own DAC commands ('Plant.closed_loop_rollout') and
-backpropagating a tracking loss to the controller weights (the
-analytic policy gradient). The plant is frozen; only the controller
-learns. The shared AMP / accumulation / early-stopping loop comes from
-the base 'Trainer' -- this module supplies the objective and the
-per-batch rollout.
+controller's own DAC commands. The plant is frozen, only the controller
+learns.
+
+Supplies the objective and the per-batch rollout.
 """
 
 from __future__ import annotations
@@ -15,7 +13,7 @@ from __future__ import annotations
 from collections.abc import Callable
 
 import torch
-import torch.nn.functional as F  # noqa: N812  (conventional alias)
+import torch.nn.functional as F  # noqa: N812
 
 from nn_motion_control.control.config import (
     ControllerConfig,
@@ -33,10 +31,14 @@ from nn_motion_control.training.rollout import (
 )
 from nn_motion_control.training.trainer import Trainer
 
-# A reference generator maps a physical origin [B, A], a horizon and an
-# optional RNG to the PVT demand (position [B, H, A], velocity
-# [B, H, A]) the controller tracks. The RNG seeds a reproducible draw
-# for validation; training passes None (fresh draws).
+# A reference generator maps a physical origin [B, A],
+# a horizon and an optional RNG to the PVT demand the controller tracks.
+#
+# The RNG seeds a reproducible draw for validation,
+# training passes None (fresh draws).
+#
+# (position [B, H, A], velocity [B, H, A])
+
 ReferenceGen = Callable[
     [torch.Tensor, int, "torch.Generator | None"],
     tuple[torch.Tensor, torch.Tensor],
@@ -60,14 +62,15 @@ def control_loss(
     """
     Closed-loop objective: a config-weighted sum of the control concerns.
 
-    'positions'/'reference'/'dacs' are [B, H, A]. The concerns are:
-    position tracking (horizon- and axis-weighted, Huber if
-    huber_delta > 0 so divergent rollouts do not dominate), velocity
-    tracking (achieved per-step motion vs 'reference_velocity', the
-    PVT demand), control effort (command magnitude) and command rate
-    (smoothness). Each is scaled by its weight, so a run dials its own
-    priorities. 'horizon_weights' ([H]) defaults to a uniform mean
-    over horizon.
+    The concerns are:
+     - Position tracking: horizon-and axis-weighted, Huber if huber_delta > 0
+        so divergent rollouts do not dominate.
+     - Velocity tracking: achieved per-step motion vs the reference velocity.
+     - Control effort: the command magnitude.
+     - Command rate: the smoothness.
+
+    Each is scaled by its weight, so a run dials its own priorities.
+    horizon_weights [H] default to a uniform mean over horizon.
     """
 
     if huber_delta > 0:
@@ -76,9 +79,12 @@ def control_loss(
         )  # [B, H, A]
     else:
         err_el = (positions - reference) ** 2
+
     if axis_weights is not None:
         err_el = err_el * axis_weights
+
     per_step = err_el.mean(dim=(0, 2))  # [H]
+
     if horizon_weights is not None:
         tracking = (horizon_weights * per_step).sum()
     else:
@@ -115,13 +121,6 @@ def control_loss(
 class ControlTrainer(Trainer):
     """
     Train a controller by policy gradient through a frozen plant.
-
-    'model' (passed to the base) is the controller, so the optimiser,
-    gradient clip and checkpoint all target it; the plant is frozen
-    and held separately. Each batch's warmup window seeds a
-    closed-loop rollout against a generated reference; the horizon
-    grows on a curriculum. 'controller_config' may be None for tests
-    that only touch '_forward_loss' (saving a checkpoint needs it).
     """
 
     def __init__(
@@ -164,6 +163,7 @@ class ControlTrainer(Trainer):
         self.rate_weight = rate_weight
         self.velocity_weight = velocity_weight
         self.huber_delta = huber_delta
+
         # Normalise to mean 1 (like RolloutTrainer) so a focus vector
         # such as [3, 1, 1] rebalances axes without changing the
         # overall tracking-loss magnitude the early-stopping threshold
@@ -175,10 +175,10 @@ class ControlTrainer(Trainer):
         )
         self.hw_mode = hw_mode
 
-        # Reproducible validation reference draws: reseeded once per
-        # validation epoch (in _validate_epoch), not per batch, so the
-        # batches within an epoch stay diverse while the metric
-        # remains comparable across epochs.
+        # Reproducible validation reference draws:
+        # reseeded once per validation epoch (in _validate_epoch),
+        # not per batch, so the batches within an epoch stay
+        # diverse while the metric remains comparable across epochs.
         self._val_gen: torch.Generator | None = None
 
         self._cur_h = curriculum_start
@@ -203,14 +203,15 @@ class ControlTrainer(Trainer):
 
     def _forward_loss(self, batch):
         warmup = batch[0].to(self.device, non_blocking=True)
+
         # The reference is a target, not a learnable quantity -> no
         # grad from the seed.
         with torch.no_grad():
             origin, _ = self.plant.seed_state(warmup)
-        # Training draws fresh random trajectories; validation reuses
-        # the per-epoch generator (seeded once in _validate_epoch) so
-        # draws are reproducible across epochs yet diverse across
-        # batches within an epoch (a no-op for fixed kinds).
+
+        # Training draws fresh random trajectories and validation reuses
+        # the per-epoch generator => draws are reproducible across epochs
+        # yet diverse across batches within an epoch (no-op for fixed kinds).
         gen = None if self.model.training else self._val_gen
         reference, ref_v = self.reference_gen(origin, self._cur_h, gen)
         positions, dacs = self.plant.closed_loop_rollout(
@@ -220,6 +221,7 @@ class ControlTrainer(Trainer):
             self._cur_h,
             reference_velocity=ref_v,
         )
+
         return control_loss(
             positions,
             reference,
@@ -242,6 +244,7 @@ class ControlTrainer(Trainer):
         self._weights = horizon_weight_vector(
             self.max_horizon, self.hw_mode, device=self.device
         )
+
         # Reseed the reference generator once per validation epoch:
         # the batches within this epoch advance the same generator
         # (diverse references) while every epoch sees the same
@@ -249,6 +252,7 @@ class ControlTrainer(Trainer):
         self._val_gen = torch.Generator(device=self.device).manual_seed(
             self.seed
         )
+
         try:
             return super()._validate_epoch()
         finally:
@@ -259,6 +263,7 @@ class ControlTrainer(Trainer):
             raise ValueError(
                 "Cannot save a controller checkpoint without a config"
             )
+
         save_controller_checkpoint(
             self.save_path,
             self.model,

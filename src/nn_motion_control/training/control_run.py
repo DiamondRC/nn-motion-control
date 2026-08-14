@@ -25,7 +25,10 @@ from nn_motion_control.control.config import (
 )
 from nn_motion_control.control.resource import score_controller
 from nn_motion_control.control.trajectories import (
+    build_family,
+    morph_family,
     sample_mixed_reference,
+    sequence_reference,
     spiral_family,
 )
 from nn_motion_control.core.config import RunConfiguration
@@ -95,7 +98,94 @@ def make_reference_gen(spec: dict, device: str):
             return sample_mixed_reference(origin, horizon, spec, generator)
 
         return mixed_gen
+    if kind in ("line", "helix", "smooth"):
+
+        def single_gen(origin, horizon, generator=None):
+            k = torch.arange(horizon, device=origin.device, dtype=origin.dtype)
+            return build_family(kind, origin, k, spec, generator)
+
+        return single_gen
+    if kind == "morph":
+        from_name = str(spec.get("from", "spiral"))
+        to_name = str(spec.get("to", "line"))
+
+        def morph_gen(origin, horizon, generator=None):
+            return morph_family(
+                origin, horizon, from_name, to_name, spec, generator
+            )
+
+        return morph_gen
+    if kind == "sequence":
+        segments = [
+            str(s) for s in spec.get("segments", ("spiral", "line", "step"))
+        ]
+        durations = spec.get("durations")
+
+        def sequence_gen(origin, horizon, generator=None):
+            return sequence_reference(
+                origin, horizon, segments, spec, generator, durations
+            )
+
+        return sequence_gen
     raise ValueError(f"Unknown reference kind: {kind!r}")
+
+
+# Trajectory shapes the track command can select with --shape; 'config'
+# means keep the controller config's own reference block unchanged.
+TRACK_SHAPES = (
+    "config",
+    "spiral",
+    "helix",
+    "line",
+    "step",
+    "smooth",
+    "mixed",
+    "morph",
+    "sequence",
+)
+
+# Canonical spiral/step shapes for visualisation (deterministic, so a
+# named shape is reproducible without a seed).
+_SPIRAL_VIZ_RADIUS = 1000.0
+_SPIRAL_VIZ_ANGULAR = 0.02
+_STEP_VIZ_AMPLITUDE = 800.0
+_STEP_VIZ_AT = 8
+
+
+def shape_spec(shape: str) -> dict:
+    """
+    Reference spec for a named track shape (the --shape flag).
+
+    'config' is handled by the caller (keep the config's own reference).
+    The deterministic shapes (spiral, step) ignore the seed; the rest draw
+    randomised params and so vary with it.
+    """
+
+    presets: dict[str, dict] = {
+        "spiral": {
+            "kind": "spiral",
+            "radius": _SPIRAL_VIZ_RADIUS,
+            "angular_step": _SPIRAL_VIZ_ANGULAR,
+        },
+        "step": {
+            "kind": "step",
+            "amplitude": _STEP_VIZ_AMPLITUDE,
+            "step_at": _STEP_VIZ_AT,
+        },
+        "helix": {"kind": "helix"},
+        "line": {"kind": "line"},
+        "smooth": {"kind": "smooth"},
+        "mixed": {"kind": "mixed"},
+        "morph": {"kind": "morph", "from": "spiral", "to": "line"},
+        "sequence": {
+            "kind": "sequence",
+            "segments": ["spiral", "line", "step"],
+        },
+    }
+    if shape not in presets:
+        raise ValueError(f"Unknown track shape: {shape!r}")
+
+    return presets[shape]
 
 
 class ControlRun:

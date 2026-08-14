@@ -6,7 +6,11 @@ import pytest
 import torch
 
 from nn_motion_control.control.closed_loop import step_reference
-from nn_motion_control.training.control_run import make_reference_gen
+from nn_motion_control.training.control_run import (
+    TRACK_SHAPES,
+    make_reference_gen,
+    shape_spec,
+)
 
 
 def test_step_reference_holds_then_steps():
@@ -65,4 +69,65 @@ def test_spiral_gen_anchors_on_origin_and_ramps_z():
 
 def test_unknown_reference_kind_raises():
     with pytest.raises(ValueError, match="Unknown reference kind"):
-        make_reference_gen({"kind": "helix"}, "cpu")
+        make_reference_gen({"kind": "bogus"}, "cpu")
+
+
+def test_helix_kind_anchors_and_climbs():
+    gen = make_reference_gen({"kind": "helix"}, "cpu")
+    origin = torch.tensor([[100.0, -50.0, 5.0]])
+    pos, vel = gen(origin, 32, torch.Generator().manual_seed(3))
+    assert pos.shape == (1, 32, 3)
+    assert vel.shape == (1, 32, 3)
+    assert torch.allclose(pos[:, 0, :], origin, atol=1e-3)  # anchored
+    assert (pos[0, -1, 2] - origin[0, 2]).abs() > 1.0  # z climbs
+
+
+@pytest.mark.parametrize("kind", ["line", "smooth", "helix", "mixed"])
+def test_randomised_kinds_are_seed_reproducible(kind):
+    gen = make_reference_gen({"kind": kind}, "cpu")
+    origin = torch.randn(4, 3) * 100.0
+    a = gen(origin, 24, torch.Generator().manual_seed(5))[0]
+    b = gen(origin, 24, torch.Generator().manual_seed(5))[0]
+    c = gen(origin, 24, torch.Generator().manual_seed(6))[0]
+    assert torch.equal(a, b)  # same seed -> identical
+    assert not torch.equal(a, c)  # different seed -> different
+    assert torch.allclose(a[:, 0, :], origin, atol=1e-3)  # anchored
+
+
+def test_morph_kind_anchored_and_reproducible():
+    gen = make_reference_gen(
+        {"kind": "morph", "from": "spiral", "to": "step"}, "cpu"
+    )
+    origin = torch.zeros(3, 3)
+    a, _ = gen(origin, 48, torch.Generator().manual_seed(2))
+    b, _ = gen(origin, 48, torch.Generator().manual_seed(2))
+    assert a.shape == (3, 48, 3)
+    assert torch.allclose(a[:, 0, :], origin, atol=1e-3)  # both anchored
+    assert torch.equal(a, b)
+
+
+def test_sequence_kind_length_and_seam_continuity():
+    gen = make_reference_gen(
+        {"kind": "sequence", "segments": ["spiral", "line", "step"]}, "cpu"
+    )
+    origin = torch.zeros(2, 3)
+    pos, _ = gen(origin, 30, torch.Generator().manual_seed(4))
+    assert pos.shape == (2, 30, 3)
+    assert torch.allclose(pos[:, 0, :], origin, atol=1e-3)
+
+    for seam in (10, 20):  # even split of 30 into three segments
+        assert torch.allclose(pos[:, seam, :], pos[:, seam - 1, :], atol=1e-3)
+
+
+def test_shape_spec_builds_every_track_shape():
+    for shape in TRACK_SHAPES:
+        if shape == "config":
+            continue
+        spec = shape_spec(shape)
+        assert "kind" in spec
+        make_reference_gen(spec, "cpu")  # every preset builds a generator
+
+
+def test_shape_spec_unknown_raises():
+    with pytest.raises(ValueError, match="Unknown track shape"):
+        shape_spec("bogus")

@@ -133,15 +133,22 @@ def save_prefs(command: str, data: dict) -> None:
         pass
 
 
-def _ask(question: str, kind: type, default) -> object:
+def _ask(question: str, kind: type, default, choices=None) -> object:
     """
-    Prompt for one option value of the given kind (int, bool or str); abort
-    on cancel.
+    Prompt for one option value; abort on cancel.
+
+    choices, when given, offers a selection menu (the value is one of the
+    listed strings); otherwise the prompt is a confirm for bool and free
+    text for int/str.
     """
 
     import questionary
 
-    if kind is bool:
+    if choices is not None:
+        answer = questionary.select(
+            question, choices=[str(c) for c in choices], default=str(default)
+        ).ask()
+    elif kind is bool:
         answer = questionary.confirm(question, default=bool(default)).ask()
     else:
         answer = questionary.text(question, default=str(default)).ask()
@@ -157,7 +164,7 @@ def _summarise(values: dict, options: list[tuple]) -> str:
     """
 
     parts = [f"config={Path(values['config']).name}"]
-    parts += [f"{key}={values[key]}" for key, _, _, _ in options]
+    parts += [f"{opt[0]}={values[opt[0]]}" for opt in options]
 
     return ", ".join(parts)
 
@@ -170,10 +177,11 @@ def interactive_setup(
     shortcut.
 
     'options' is a list of (key, prompt, kind, default) where kind is int,
-    bool or str. If the last-used settings are still valid the flow offers
-    to reuse them (default yes); otherwise it picks a config and prompts
-    each option, pre-filled with the last value or default. The chosen
-    settings are saved for next time. TTY only.
+    bool or str, optionally with a fifth element: a list of choices that
+    turns the prompt into a selection menu. If the last-used settings are
+    still valid the flow offers to reuse them (default yes); otherwise it
+    picks a config and prompts each option, pre-filled with the last value
+    or default. The chosen settings are saved for next time. TTY only.
     """
 
     import questionary
@@ -184,7 +192,7 @@ def interactive_setup(
     prev_valid = (
         bool(prev)
         and Path(prev.get("config", "")).exists()
-        and all(key in prev for key, _, _, _ in options)
+        and all(opt[0] in prev for opt in options)
     )
     if prev_valid:
         reuse = questionary.confirm(
@@ -198,8 +206,10 @@ def interactive_setup(
 
     result: dict = {"config": pick_config(pick_purpose)}
 
-    for key, prompt, kind, default in options:
-        result[key] = _ask(prompt, kind, prev.get(key, default))
+    for opt in options:
+        key, prompt, kind, default = opt[:4]
+        choices = opt[4] if len(opt) > 4 else None
+        result[key] = _ask(prompt, kind, prev.get(key, default), choices)
     save_prefs(command, result)
 
     return result

@@ -1,11 +1,5 @@
 """
 Rollout-training objective and schedules.
-
-Pure functions the rollout trainer composes: the joint loss
-(accumulated-position spine plus an optional per-step increment term),
-horizon weighting and the epoch schedules for scheduled sampling and
-the horizon curriculum. Kept free of model/loop state so they can be
-tested in isolation.
 """
 
 from __future__ import annotations
@@ -34,8 +28,8 @@ def linear_schedule(
 
     if over_epochs <= 0:
         return end
-    frac = min(1.0, max(0.0, epoch / over_epochs))
 
+    frac = min(1.0, max(0.0, epoch / over_epochs))
     return start + (end - start) * frac
 
 
@@ -48,8 +42,8 @@ def curriculum_horizon(
 
     if ramp_epochs <= 0:
         return max_h
-    frac = min(1.0, max(0.0, epoch / ramp_epochs))
 
+    frac = min(1.0, max(0.0, epoch / ramp_epochs))
     return min(max_h, int(round(start_h + (max_h - start_h) * frac)))
 
 
@@ -62,8 +56,9 @@ def horizon_weights(
     """
     Per-step loss weights over the horizon, normalised to sum to 1.
 
-    uniform weights every step equally; discount = gamma**k (emphasise
-    near-term); increasing = k (emphasise long-horizon robustness).
+    'uniform' weights every step equally
+    'discount' = gamma**k emphasises the near-term
+    'increasing' = k emphasises long-horizon robustness.
     """
 
     k = torch.arange(horizon, device=device, dtype=torch.float32)
@@ -90,28 +85,24 @@ def rollout_loss(
     """
     Joint rollout loss: horizon-weighted accumulated error plus an
     optional per-step term.
-
-    preds/gt_pos are [B, H, A] (normalised positions); seed_last is
-    [B, A], the window's last true position. The accumulated (L_acc)
-    term is the per-step position MSE; the per-step (L_step) term
-    matches the step-to-step increment (the local velocity profile)
-    and is added with step_weight.
-
-    axis_weights [A] (normalised to mean 1 by the caller) re-balances
-    the per-axis contributions so a hard axis does not dominate the
-    objective; None weights equally.
     """
 
+    # Position equence loss
     sq = (preds - gt_pos) ** 2  # [B, H, A]
+
+    # Weight by axis
     if axis_weights is not None:
         sq = sq * axis_weights
+
     per_step = sq.mean(dim=(0, 2))  # [H]
     loss = (weights * per_step).sum()
 
+    # Match the velocity shape of the tarjectory
     if step_weight > 0:
         prev_pred = torch.cat([seed_last.unsqueeze(1), preds[:, :-1, :]], dim=1)
         prev_gt = torch.cat([seed_last.unsqueeze(1), gt_pos[:, :-1, :]], dim=1)
         inc_sq = ((preds - prev_pred) - (gt_pos - prev_gt)) ** 2  # [B, H, A]
+
         if axis_weights is not None:
             inc_sq = inc_sq * axis_weights
         loss = loss + step_weight * inc_sq.mean()
@@ -126,8 +117,7 @@ def normalise_axis_weights(
     Per-axis loss weights normalised to mean 1, so the overall loss
     scale is unchanged.
 
-    Use to focus an under-fit axis (e.g. [3, 1, 1] triples x's
-    contribution relative to the mean) without changing the loss
+    Use to focus an under-fit axis without changing the loss
     magnitude the early-stopping threshold sees.
     """
 
@@ -139,13 +129,9 @@ class RolloutTrainer(Trainer):
     """
     Trainer for the multi-step rollout objective.
 
-    Reuses the base AMP / gradient-accumulation / early-stopping loop
-    and only overrides the per-batch objective (roll the plant, joint
-    loss) and a per-epoch hook that advances the scheduled-sampling
-    probability and the horizon curriculum. The rollout loader yields
-    (warmup, dac_future, gt_pos) already on the device; the curriculum
-    slices the first horizon(t) steps from tensors built at the
-    maximum horizon.
+    Overrides the per-batch objective (roll the plant, joint loss)
+    and a per-epoch hook that advances the scheduled-sampling
+    probability and the horizon curriculum.
     """
 
     def __init__(
@@ -177,10 +163,8 @@ class RolloutTrainer(Trainer):
         self._ss_gen = torch.Generator(device=self.device).manual_seed(
             self.seed
         )
+
         # Per-axis loss weights so a hard axis does not dominate.
-        # Explicit weights (to focus an under-fit axis) win; else
-        # auto_balance calibrates ~1/mse from the warm-started plant's
-        # free-run error; else equal weighting (None).
         if axis_weights is not None:
             self.axis_weights = normalise_axis_weights(
                 axis_weights, self.device
@@ -189,10 +173,12 @@ class RolloutTrainer(Trainer):
             self.axis_weights = self._calibrate_axis_weights()
         else:
             self.axis_weights = None
-        # Cache the per-horizon weight vectors; the curriculum revisits
-        # the same few horizons every epoch, so there is no need to
-        # rebuild them each batch.
+
+        # Cache the per-horizon weight vectors:
+        # the curriculum revisits the same few horizons every epoch,
+        # => do not rebuild each batch.
         self._weight_cache: dict[int, torch.Tensor] = {}
+
         # Validation is graded free-running at the full horizon
         # regardless of the curriculum, so the early-stopping metric
         # tracks the deployment quantity (the error-vs-horizon drift)
@@ -225,9 +211,11 @@ class RolloutTrainer(Trainer):
                 warmup, dac_future[:, :h], h, ss_prob=0.0
             )
             mse_axis = ((preds - gt_pos[:, :h]) ** 2).mean(dim=(0, 1))  # [A]
+
         self.plant.model.train()
         w = 1.0 / (mse_axis + AXIS_WEIGHT_EPS)
         w = w / w.mean()
+
         logger.info(
             "Auto-balanced axis weights (1/mse): %s",
             [round(float(x), 3) for x in w],
@@ -244,9 +232,9 @@ class RolloutTrainer(Trainer):
         )
 
     def _validate_epoch(self):
-        # Grade validation free-running at the full horizon (see the
-        # _eval_mode note above).
+        # Grade validation free-running at the full horizon
         self._eval_mode = True
+
         try:
             return super()._validate_epoch()
         finally:
@@ -254,6 +242,7 @@ class RolloutTrainer(Trainer):
 
     def _weights_for(self, h: int) -> torch.Tensor:
         w = self._weight_cache.get(h)
+
         if w is None:
             w = horizon_weights(h, self.hw_mode, device=self.device)
             self._weight_cache[h] = w
@@ -262,10 +251,12 @@ class RolloutTrainer(Trainer):
 
     def _forward_loss(self, batch):
         warmup, dac_future, gt_pos = batch
+
         if self._eval_mode:
             h, ss_prob = self.max_horizon, 0.0
         else:
             h, ss_prob = self._cur_h, self._cur_ss
+
         dac_h, gt_h = dac_future[:, :h], gt_pos[:, :h]
         preds = self.plant.roll_forward(
             warmup,
@@ -275,8 +266,8 @@ class RolloutTrainer(Trainer):
             ss_prob=ss_prob,
             generator=self._ss_gen,
         )
-        # Last true position of the seed window, for the per-step
-        # increment term.
+        # Last true position of the seed window,
+        # for the per-step increment term.
         seed_last = warmup[:, :, -1][:, self.plant.layout.pos_cols].float()
         weights = self._weights_for(h)
         return rollout_loss(

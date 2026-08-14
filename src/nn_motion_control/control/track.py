@@ -39,7 +39,10 @@ from nn_motion_control.plant.plant import (
     RolloutLayout,
     rollout_splits_from_config,
 )
-from nn_motion_control.training.control_run import make_reference_gen
+from nn_motion_control.training.control_run import (
+    make_reference_gen,
+    shape_spec,
+)
 
 logger = logging.getLogger(os.path.basename(__file__))
 
@@ -201,6 +204,8 @@ def run_track(
     viz_steps: int = 512,
     show: bool = True,
     reanchor: int = 0,
+    shape: str = "config",
+    seed: int = 42,
 ) -> float:
     """
     Evaluate a trained controller closed-loop: log metrics and draw motion
@@ -219,6 +224,11 @@ def run_track(
     the honest long-setpoint metric: a bounded, stationary trend means the
     controller tracks arbitrarily long trajectories, whereas the raw
     (reanchor=0) run conflates control error with simulator drift.
+
+    shape selects the reference trajectory ('config' keeps the controller
+    config's own reference; the other named shapes come from
+    'control_run.shape_spec'); seed makes the randomised shapes
+    reproducible.
     """
 
     start = time.perf_counter()
@@ -248,11 +258,18 @@ def run_track(
         val_start_stride=8,
         quiescent_seed=train.get("seed_quiescence"),
     )
-    ref_gen = make_reference_gen(train.get("reference", {}), device)
+    # A --shape override selects a named trajectory; 'config' keeps the
+    # controller config's own reference block (backward compatible). The
+    # seeded generator makes the randomised shapes reproducible.
+    ref_spec = (
+        train.get("reference", {}) if shape == "config" else shape_spec(shape)
+    )
+    ref_gen = make_reference_gen(ref_spec, device)
+    ref_generator = torch.Generator(device=device).manual_seed(seed)
     viz_h = max(int(viz_steps), horizon)
     warmup = next(iter(loaders.val_loader))[0].to(device)
     origin, _ = plant.seed_state(warmup)
-    reference, ref_v = ref_gen(origin, viz_h)
+    reference, ref_v = ref_gen(origin, viz_h, ref_generator)
 
     rollout_msg = (
         f"Rolling out {warmup.shape[0]} seeds x {viz_h} steps "

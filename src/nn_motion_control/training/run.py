@@ -27,10 +27,6 @@ from nn_motion_control.training.logging_setup import ModelLogger
 from nn_motion_control.training.rollout import RolloutTrainer
 from nn_motion_control.training.trainer import Trainer, config_overrides
 
-# For formatting the run duration as hours:minutes:seconds.
-SECONDS_PER_HOUR = 3600
-SECONDS_PER_MINUTE = 60
-
 
 class CompleteRun:
     def __init__(self, model_cfg_pth):
@@ -57,8 +53,7 @@ class CompleteRun:
         self.logger = logging.getLogger(os.path.basename(__file__))
 
         # Snapshot the exact run config alongside the log so past runs
-        # are reproducible (the source JSON is mutable and
-        # git-tracked).
+        # are reproducible.
         try:
             shutil.copy(
                 self.m.json_path,
@@ -89,8 +84,8 @@ class CompleteRun:
                 )
             self.device = "cuda"
 
-            # Fixed input shapes -> let cuDNN autotune; allow TF32 on
-            # matmuls.
+            # Fixed input shapes -> let cuDNN autotune
+            # allow TF32 on matmuls.
             torch.backends.cudnn.benchmark = True
             # 'high' (TF32) over 'medium': bf16 autocast already covers
             # the bulk of compute, so the fp32 matmuls this setting
@@ -101,12 +96,13 @@ class CompleteRun:
                 "CUDA not available, using CPU (not recommended)"
             )
             self.device = "cpu"
-            # float16 autocast is unsupported/unreliable on CPU; bf16
-            # has fp32 range and works there, so fall back to it
+
+            # float16 autocast is unsupported/unreliable on CPU - bf16
+            # has fp32 range and works - so fall back to it
             # rather than silently misbehaving.
             if self.m.dtype == torch.float16:
                 self.logger.warning(
-                    "training_dtype float16 is unreliable on CPU; "
+                    "training_dtype float16 is unreliable on CPU, "
                     "using bfloat16"
                 )
                 self.m.dtype = torch.bfloat16
@@ -114,6 +110,7 @@ class CompleteRun:
     def _create_run_dataloaders(self):
         if self.is_rollout:
             return self._create_rollout_dataloaders()
+
         self.dloader = build_time_series_splits(
             h5_path=self.m.datafile_dir,
             allowed_inputs=self.m.input_params,
@@ -146,10 +143,8 @@ class CompleteRun:
         assert ro is not None
         self.rollout_layout = RolloutLayout.from_config(self.m)
         max_h = int(ro["horizon"])
-        # Subsample redundant overlapping window starts; validation
-        # strides harder since it now free-runs the full horizon every
-        # epoch. Compiling the step needs a constant batch shape, so
-        # drop the ragged last batch when compile is on.
+
+        # Subsample redundant overlapping window starts
         compiling = self.m.do_compile and self.device == "cuda"
         self.dloader = rollout_splits_from_config(
             self.m,
@@ -184,10 +179,9 @@ class CompleteRun:
                 "Initialised weights from %s", self.m.init_checkpoint
             )
 
-        # Channels-last forward: run the convs as NHWC conv2d so
-        # cuDNN's tensor-core kernels skip the NCHW<->NHWC transpose
-        # that otherwise dominates each conv. The rollout path enables
-        # this in _run_rollout_trainer; do the same for one-step.
+        # Channels-last forward: run convs as NHWC conv2d so cuDNN's
+        # tensor-core kernels skip the NCHW<->NHWC transpose
+        # that otherwise dominates each conv on the DGXSpark.
         if (
             not self.is_rollout
             and self.device == "cuda"
@@ -198,7 +192,7 @@ class CompleteRun:
             self.logger.info("Channels-last conv2d single-step forward enabled")
 
         # The rollout path compiles its own one-step view in
-        # _run_rollout_trainer, so skip this compile there.
+        # _run_rollout_trainer - skip compile there.
         if self.m.do_compile and self.device == "cuda" and not self.is_rollout:
             mode = self.m.compile_mode
             self.logger.info(
@@ -238,10 +232,10 @@ class CompleteRun:
         ro = self.m.rollout
         assert ro is not None
         ni = self.dloader.node_info
+
         # Channels-last forward: run the convs as NHWC conv2d so
         # cuDNN's tensor-core kernels skip the NCHW<->NHWC transposes
-        # that otherwise dominate the memory-bound rollout (~40% of
-        # runtime). Same maths; falls back for non-TCN.
+        # that otherwise dominate the memory-bound rollout.
         if (
             self.device == "cuda"
             and ro.get("channels_last", True)
@@ -249,25 +243,23 @@ class CompleteRun:
         ):
             self.model.enable_channels_last()
             self.logger.info("Channels-last conv2d rollout forward enabled")
-        # Compile the one-step model, not the unroll: each call sees a
-        # constant [B, F, W] window regardless of the curriculum
-        # horizon, so it is compile-safe and cuts per-step launch
-        # overhead. Autograd still composes the H differentiable
-        # calls; mode is configurable (default 'default', or
-        # 'reduce-overhead' for CUDA graphs).
+
+        # Compile the one-step model, but not the unroll
         step_model = self.model
         is_streaming = ro.get("rollout_kind", "windowed") == "streaming"
+
         if self.m.do_compile and self.device == "cuda" and not is_streaming:
             mode = ro.get("compile_mode", "default")
             self.logger.info(
                 "Compiling rollout step (torch.compile mode=%s)", mode
             )
             # torch.compile returns an OptimizedModule (an nn.Module)
-            # but is typed as a bare callable; cast so Plant still
+            # but is typed as a bare callable, cast so Plant still
             # sees a Module.
             step_model = cast(
                 torch.nn.Module, torch.compile(self.model, mode=mode)
             )
+
         plant = Plant(
             step_model,
             ni.input_stats,
@@ -276,9 +268,8 @@ class CompleteRun:
             self.device,
             rollout_kind=ro.get("rollout_kind", "windowed"),
         )
-        # Curriculum and loss knobs the config may override; an
-        # absent key falls to RolloutTrainer's own default, so those
-        # defaults live in one place.
+
+        # Curriculum and loss knobs the config may override
         overrides = config_overrides(
             ro,
             {
@@ -292,8 +283,9 @@ class CompleteRun:
                 "axis_weights": list,
             },
         )
-        # The config names horizon weighting 'horizon_weighting'; the
-        # trainer 'hw_mode'.
+
+        # The config names horizon weighting 'horizon_weighting',
+        # the trainer 'hw_mode'.
         if "horizon_weighting" in ro:
             overrides["hw_mode"] = str(ro["horizon_weighting"])
 
@@ -330,10 +322,10 @@ class CompleteRun:
         if self.is_rollout:
             # The one-step evaluator cannot consume rollout batches.
             self.logger.info(
-                "Rollout training complete; run the error-vs-horizon "
+                "Rollout training complete. Run the error-vs-horizon "
                 "eval separately."
             )
-            return
+            return  # awesome python
 
         train_losses, val_losses, early_stop_epoch = (
             self.trainer.get_training_info()
@@ -362,9 +354,9 @@ class CompleteRun:
         end_time = time.perf_counter()
         elapsed = end_time - self.start_time
 
-        hours = int(elapsed // SECONDS_PER_HOUR)
-        minutes = int((elapsed % SECONDS_PER_HOUR) // SECONDS_PER_MINUTE)
-        seconds = elapsed % SECONDS_PER_MINUTE
+        hours = int(elapsed // 3600)
+        minutes = int((elapsed % 3600) // 60)
+        seconds = elapsed % 60
         self.hms = f"{hours:02d}:{minutes:02d}:{seconds:06.3f}".rstrip(
             "0"
         ).rstrip(":")
@@ -373,8 +365,8 @@ class CompleteRun:
             f"Model training and testing took {self.hms} (Hours/Mins/Secs)."
         )
 
-        # Rollout eval (error-vs-horizon) is a separate step, so only
-        # one-step runs have loss curves to plot here.
+        # Rollout eval (error-vs-horizon) is a separate step,
+        # so only one-step runs have loss curves to plot here.
         if not self.is_rollout:
             self.tester.plot_losses()
 

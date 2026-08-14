@@ -11,18 +11,10 @@ from nn_motion_control.data.loaders import BatchLoader
 
 logger = logging.getLogger(os.path.basename(__file__))
 
-# Divisor for reporting peak CUDA memory in gigabytes rather than bytes.
-BYTES_PER_GB = 1e9
-
 
 def config_overrides(source: dict, casts: dict) -> dict:
     """
     Trainer keyword overrides the config supplies, each cast to its type.
-
-    An absent key is omitted so the trainer signature's own default
-    applies, keeping default values in one place rather than duplicated
-    as fallbacks at the call site. Each key names both the config field
-    and the trainer keyword.
     """
 
     return {
@@ -32,9 +24,9 @@ def config_overrides(source: dict, casts: dict) -> dict:
 
 class Trainer:
     """
-    Train and validate a model with mixed precision, gradient accumulation
-    and early stopping; the best checkpoint (weights + norm stats +
-    provenance) is saved to disk.
+    Train and validate a model with mixed precision,
+    gradient accumulation and early stopping.
+    Best checkpoint is saved to disk.
     """
 
     def __init__(
@@ -64,7 +56,8 @@ class Trainer:
         self.train_loader = train_loader
         self.val_loader = val_loader
         self.device = device
-        # Loss scaling is only needed for float16 (bf16 has fp32 range);
+
+        # Loss scaling is only needed for float16 (bf16 has fp32 range),
         # disabling it for other dtypes keeps the step a no-op instead of
         # rescaling needlessly.
         self.scaler = scaler_class(
@@ -103,8 +96,8 @@ class Trainer:
 
         self.train_losses = []
         self.val_losses = []
-        # Per-epoch profiling: train/val wall time and peak CUDA memory, to
-        # see how cost scales (e.g. with the rollout horizon curriculum)
+        # Per-epoch profiling: train/val wall time and peak CUDA memory,
+        # to see how cost scales (e.g. with the rollout horizon curriculum)
         # across a run.
         self.epoch_train_times: list[float] = []
         self.epoch_val_times: list[float] = []
@@ -114,11 +107,8 @@ class Trainer:
 
     def _forward_loss(self, batch):
         """
-        Compute the loss for one batch (one-step prediction).
-
-        Subclasses override this to change the per-batch objective; the
-        surrounding AMP, gradient accumulation, clipping and early
-        stopping are shared.
+        Compute the loss for one batch (w/ one-step prediction).
+        Overwritable.
         """
 
         data, labels = batch[0], batch[1]
@@ -129,18 +119,17 @@ class Trainer:
 
     def _on_epoch_start(self, epoch: int) -> None:
         """
-        Per-epoch setup hook: a no-op for one-step, used by rollout for
-        its schedules.
+        Per-epoch setup hook: a no-op for one-step,
+        used by rollout for its schedules.
         """
 
     def _is_improvement(self, val_loss: float, best_val_loss: float) -> bool:
         """
-        Whether val_loss beats the best by the min_delta margin.
+        Whether val_loss beats the best by a relative fraction of
+        the current best, so the check is robust across loss magnitudes.
 
-        min_delta is a relative fraction of the current best, so the
-        check is robust across loss magnitudes. An absolute margin
-        mis-scaled to the loss (e.g. 1e-6 against a ~1e-5 loss) can
-        otherwise never trigger, freezing the best on epoch 1.
+        An absolute margin mis-scaled to the loss (e.g. 1e-6 on a ~1e-5 loss)
+        can otherwise never trigger, freezing the best on epoch 1.
         """
 
         return val_loss < best_val_loss * (1.0 - self.min_delta)
@@ -148,15 +137,12 @@ class Trainer:
     def _train_epoch(self):
         """
         Run one training epoch with gradient accumulation and mixed precision.
-
-        Accumulation simulates a larger batch than fits in memory: the loss
-        is scaled down per batch and the optimiser step is deferred until
-        accumulation_steps batches have contributed their gradients.
         """
 
         self.model.train()
         total_loss = 0
-        # Batches that contributed to the mean; NaN/Inf batches are skipped.
+
+        # Batches contributed to the mean (skip NaN/Inf)
         counted_batches = 0
         # Gradients not yet stepped in the current accumulation cycle.
         has_pending = False
@@ -165,13 +151,12 @@ class Trainer:
             if (batch_idx % self.accumulation_steps) == 0:
                 self.optimizer.zero_grad(set_to_none=True)
 
-            # Mixed precision context for later quantisation support. The
-            # per-batch forward and loss live in _forward_loss so
+            # Mixed precision context for later quantisation support.
+            # The per-batch forward and loss live in _forward_loss so
             # subclasses can override them.
             with autocast(device_type=self.device, dtype=self.training_dtype):
                 loss = self._forward_loss(batch) / self.accumulation_steps
 
-            # Guard against NaN/Inf loss, which can destabilize training.
             if torch.isnan(loss) or torch.isinf(loss):
                 if torch.isnan(loss):
                     logger.warning(f"NaN at batch {batch_idx}, skipping")
@@ -248,8 +233,8 @@ class Trainer:
         """
         Save the model plus everything needed to run/denormalize it later.
 
-        Normalization is fit at train time (not stored in the
-        dataset), so the fitted stats must travel with the weights or
+        Normalization is fit at train time (not stored in the dataset),
+        so the fitted stats must travel with the weights or
         inference cannot recover physical units.
         """
 
@@ -281,8 +266,7 @@ class Trainer:
         os.makedirs(os.path.dirname(self.save_path), exist_ok=True)
         torch.save(checkpoint, self.save_path)
 
-        # Human-readable sidecar with the denorm params (no tensors)
-        # for inspection.
+        # Readable sidecar with the denorm params for inspection.
         write_json_sidecar(
             self.save_path,
             {
@@ -313,20 +297,24 @@ class Trainer:
                 self._on_epoch_start(epoch)
                 if self.device == "cuda":
                     torch.cuda.reset_peak_memory_stats()
+
                 t0 = time.perf_counter()
                 train_loss = self._train_epoch()
                 t_train = time.perf_counter() - t0
+
                 t0 = time.perf_counter()
                 val_loss = self._validate_epoch()
                 t_val = time.perf_counter() - t0
+
                 peak_gb = (
-                    torch.cuda.max_memory_allocated() / BYTES_PER_GB
+                    # Reports in bytes, return GB
+                    torch.cuda.max_memory_allocated() / 1e9
                     if self.device == "cuda"
                     else 0.0
                 )
 
-                # Store losses plus per-epoch profiling for plotting and
-                # cost analysis.
+                # Store losses plus per-epoch profiling
+                # for plotting and cost analysis.
                 self.train_losses.append(train_loss)
                 self.val_losses.append(val_loss)
                 self.epoch_train_times.append(t_train)
@@ -357,6 +345,9 @@ class Trainer:
                     )
                     break
 
+            # If we get fed up waiting for training we can Ctrl+C
+            # and this will attempt to finish the current epoch
+            # so you can see the result.
             except KeyboardInterrupt:
                 try:
                     logger.info(
@@ -388,5 +379,7 @@ class Trainer:
                         break
 
                     break
+
+                # Ctrl+C again to exit completely.
                 except RuntimeError:
                     break

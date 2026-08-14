@@ -9,7 +9,8 @@ from torch import Tensor
 
 class WeightedMSELoss(nn.Module):
     """
-    MSE scaled per target channel; the weight vector is applied before the mean.
+    MSE scaled per target channel.
+    The weight vector is applied before the mean.
     """
 
     def __init__(self, weights: Tensor | None = None):
@@ -23,6 +24,8 @@ class WeightedMSELoss(nn.Module):
 
     def forward(self, preds: Tensor, targets: Tensor) -> Tensor:
         loss = (preds - targets) ** 2
+
         if self.weights is not None:
             loss = loss * self.weights
+
         return loss.mean()

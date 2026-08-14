@@ -19,10 +19,9 @@ class ModelLogger:
         """
         Build a file handler with a run-unique log filename.
 
-        The json logging config cannot express a per-run filename, so
-        this constructs the RotatingFileHandler by hand and appends
-        it to the root logger after dictConfig sets up everything
-        else.
+        The json logging config cannot express a per-run filename,
+        so this constructs the RotatingFileHandler by hand and appends
+        it to the root logger after dictConfig sets up everything else.
         """
 
         with open("logging.json") as f:

@@ -296,6 +296,16 @@ def track(
         "--no-show",
         help="Skip the native interactive 3D window (files only).",
     ),
+    shape: str = typer.Option(
+        "config",
+        "--shape",
+        help="Reference trajectory: config (the config's own), spiral, "
+        "helix, line, step, smooth, mixed, morph or sequence. spiral and "
+        "step are deterministic; the rest vary with --seed.",
+    ),
+    seed: int = typer.Option(
+        42, "--seed", help="Seed for the randomised reference shapes."
+    ),
 ) -> None:
     """
     Evaluate a trained controller closed-loop: per-axis tracking metrics +
@@ -307,8 +317,13 @@ def track(
     import torch
 
     from .control.track import run_track
+    from .training.control_run import TRACK_SHAPES
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
+    if shape not in TRACK_SHAPES:
+        raise typer.BadParameter(
+            f"shape must be one of {', '.join(TRACK_SHAPES)}"
+        )
     # A bare "track" (no config) lets you choose the config and its options
     # in the terminal (offering to reuse the last run); an explicit config
     # path keeps the given flags, so scripts and CI are unaffected.
@@ -332,6 +347,14 @@ def track(
                 ),
                 ("animate", "Render the GIF animation?", bool, not no_animate),
                 ("show", "Open the interactive 3D window?", bool, not no_show),
+                (
+                    "shape",
+                    "Trajectory shape",
+                    str,
+                    shape,
+                    list(TRACK_SHAPES),
+                ),
+                ("seed", "Reference seed", int, seed),
             ],
         )
         controller_cfg_pth = str(setup["config"])
@@ -339,6 +362,8 @@ def track(
         samples = int(setup["samples"])
         viz_steps = int(setup["viz_steps"])
         no_animate, no_show = not setup["animate"], not setup["show"]
+        shape = str(setup["shape"])
+        seed = int(setup["seed"])
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     run_track(
@@ -349,6 +374,8 @@ def track(
         viz_steps=viz_steps,
         show=not no_show,
         reanchor=reanchor,
+        shape=shape,
+        seed=seed,
     )
 
 
