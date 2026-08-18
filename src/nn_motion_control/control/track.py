@@ -302,6 +302,24 @@ def run_track(
         horizon,
         anchor_note,
     )
+    # Physical time and demanded path speed.
+    dt_ms = 1000.0 / config.servo_rate_hz
+    logger.info("")
+    logger.info(
+        "Trajectory time: %d steps = %.2f ms (trained horizon %d = %.2f ms)",
+        viz_h,
+        viz_h * dt_ms,
+        horizon,
+        horizon * dt_ms,
+    )
+    speed_scale = torch.as_tensor(to_nm, device=ref_v.device, dtype=ref_v.dtype)
+    demanded = (ref_v * speed_scale).norm(dim=-1)  # [B, H] nm/step, path
+    to_ums = config.servo_rate_hz / 1000.0  # nm/step -> um/s
+    logger.info(
+        "Demanded speed: median %.1f um/s, peak %.1f um/s",
+        float(demanded.median()) * to_ums,
+        float(demanded.max()) * to_ums,
+    )
     # In-horizon RMS (the training regime) plus its velocity, for the summary.
     hz = slice(0, horizon)
     _log_metrics(
@@ -324,25 +342,21 @@ def run_track(
         "nm/step",
     )
     # Error vs step -- a horizon-averaged RMS hides that error compounds
-    # past the trained horizon. When re-anchoring, sample the pre-anchor
-    # peak (deepest drift in a segment) and post-anchor point (freshly
-    # corrected) across the whole setpoint, so stationarity -- same
-    # excursion early vs late -- is directly visible.
+    # past the trained horizon. Always sample quarter points across the
+    # whole setpoint so the mid-trajectory peak is never skipped (a small
+    # re-anchor stride otherwise collapses the ladder onto the first few
+    # steps, hiding the worst excursion between two easy endpoints). When
+    # re-anchoring, add the pre-anchor peak and post-anchor point so
+    # stationarity -- same excursion early vs late -- is directly visible.
+    cand = [1, viz_h // 4, viz_h // 2, (3 * viz_h) // 4, viz_h - 1]
+    # Trained-horizon milestones (and a couple past it) catch the early-mid
+    # region the quarter points are too coarse for, in either mode.
+    cand += [max(1, horizon // 2), horizon, horizon * 2, horizon * 4]
     if reanchor:
-        cand = [1, reanchor - 1, reanchor]
+        cand += [reanchor - 1, reanchor]
 
         for m in REANCHOR_SAMPLE_MULTIPLES:
             cand += [reanchor * m - 1, reanchor * m]
-        cand.append(viz_h - 1)
-    else:
-        cand = [
-            1,
-            max(1, horizon // 2),
-            horizon,
-            horizon * 2,
-            horizon * 4,
-            viz_h - 1,
-        ]
     steps = sorted({s for s in cand if 1 <= s < viz_h})
     _log_error_ladder(
         "trained controller error vs step",
@@ -408,6 +422,7 @@ def run_track(
             )
 
     elapsed = time.perf_counter() - start
+    logger.info("")
     logger.info("Track complete in %.1fs", elapsed)
     # The interactive window blocks (user time), so open it last -- after
     # the timer and after every file is written.
