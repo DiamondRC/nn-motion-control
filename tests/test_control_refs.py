@@ -94,6 +94,18 @@ def test_randomised_kinds_are_seed_reproducible(kind):
     assert torch.allclose(a[:, 0, :], origin, atol=1e-3)  # anchored
 
 
+def test_spiral_shape_is_tilted_and_seed_varies():
+    gen = make_reference_gen(shape_spec("spiral"), "cpu")
+    origin = torch.zeros(3, 3)
+    a, _ = gen(origin, 96, torch.Generator().manual_seed(1))
+    b, _ = gen(origin, 96, torch.Generator().manual_seed(1))
+    c, _ = gen(origin, 96, torch.Generator().manual_seed(2))
+    assert torch.allclose(a[:, 0, :], origin, atol=1e-3)  # anchored
+    assert a[:, :, 2].abs().max() > 10.0  # sweeps z, not a flat x-y circle
+    assert torch.equal(a, b)  # reproducible per seed
+    assert not torch.equal(a, c)  # orientation varies with the seed
+
+
 def test_morph_kind_anchored_and_reproducible():
     gen = make_reference_gen(
         {"kind": "morph", "from": "spiral", "to": "step"}, "cpu"

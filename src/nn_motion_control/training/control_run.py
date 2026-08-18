@@ -11,6 +11,7 @@ logs the FPGA resource cost of the result.
 from __future__ import annotations
 
 import logging
+import math
 import os
 import time
 from datetime import datetime
@@ -77,18 +78,44 @@ def make_reference_gen(spec: dict, device: str):
         angular = float(spec.get("angular_step", 0.1))
         z_rate = float(spec.get("z_rate", 0.0))
         xy = tuple(int(v) for v in spec.get("xy", (0, 1)))
+        tilt = spec.get("tilt")
+        radius_end = spec.get("radius_end")
 
         def spiral_gen(origin, horizon, generator=None):
             b = origin.shape[0]
-            k = torch.arange(horizon, device=origin.device, dtype=origin.dtype)
+            dev, dt = origin.device, origin.dtype
+            k = torch.arange(horizon, device=dev, dtype=dt)
 
             def col(value):
-                return torch.full(
-                    (b,), value, device=origin.device, dtype=origin.dtype
+                return torch.full((b,), value, device=dev, dtype=dt)
+
+            tilt_x = tilt_y = None
+            if tilt is not None:
+                if isinstance(tilt, (tuple, list)):
+                    t_min, t_max = float(tilt[0]), float(tilt[1])
+                else:
+                    t_min, t_max = 0.0, float(tilt)
+                theta = t_min + (t_max - t_min) * torch.rand(
+                    1, generator=generator, device=dev, dtype=dt
                 )
+                azimuth = (2.0 * math.pi) * torch.rand(
+                    1, generator=generator, device=dev, dtype=dt
+                )
+                tilt_x = (theta * torch.sin(azimuth)).expand(b)
+                tilt_y = (theta * torch.cos(azimuth)).expand(b)
+
+            r_end = None if radius_end is None else col(float(radius_end))
 
             return spiral_family(
-                origin, k, col(radius), col(angular), col(z_rate), xy
+                origin,
+                k,
+                col(radius),
+                col(angular),
+                col(z_rate),
+                xy,
+                tilt_x=tilt_x,
+                tilt_y=tilt_y,
+                radius_end=r_end,
             )
 
         return spiral_gen
@@ -144,35 +171,46 @@ TRACK_SHAPES = (
     "sequence",
 )
 
-# Canonical spiral/step shapes for visualisation (deterministic, so a
-# named shape is reproducible without a seed).
+# Spiral/step/helix shapes for visualisation.
 _SPIRAL_VIZ_RADIUS = 1000.0
-_SPIRAL_VIZ_ANGULAR = 0.02
+_SPIRAL_VIZ_RADIUS_END = 0.0
+_SPIRAL_VIZ_ANGULAR = 0.05
+_SPIRAL_VIZ_TILT = (math.pi / 6, math.pi / 3)
 _STEP_VIZ_AMPLITUDE = 800.0
 _STEP_VIZ_AT = 8
+_HELIX_VIZ_RADIUS = 1000.0
+_HELIX_VIZ_ANGULAR = 0.03
+_HELIX_VIZ_Z_RATE = 20.0
 
 
 def shape_spec(shape: str) -> dict:
     """
-    Reference spec for a named track shape (the --shape flag).
+    Reference spec for a named track shape.
 
-    'config' is handled by the caller (keep the config's own reference).
-    The deterministic shapes (spiral, step) ignore the seed; the rest draw
-    randomised params and so vary with it.
+    step and helix are deterministic (seed-independent); the spiral tilts
+    to a seed-dependent orientation, and the remaining shapes draw
+    randomised params, so all of those vary with the seed.
     """
 
     presets: dict[str, dict] = {
         "spiral": {
             "kind": "spiral",
             "radius": _SPIRAL_VIZ_RADIUS,
+            "radius_end": _SPIRAL_VIZ_RADIUS_END,
             "angular_step": _SPIRAL_VIZ_ANGULAR,
+            "tilt": _SPIRAL_VIZ_TILT,
         },
         "step": {
             "kind": "step",
             "amplitude": _STEP_VIZ_AMPLITUDE,
             "step_at": _STEP_VIZ_AT,
         },
-        "helix": {"kind": "helix"},
+        "helix": {
+            "kind": "spiral",
+            "radius": _HELIX_VIZ_RADIUS,
+            "angular_step": _HELIX_VIZ_ANGULAR,
+            "z_rate": _HELIX_VIZ_Z_RATE,
+        },
         "line": {"kind": "line"},
         "smooth": {"kind": "smooth"},
         "mixed": {"kind": "mixed"},
@@ -215,9 +253,7 @@ class ControlRun:
         reference_gen = make_reference_gen(
             train.get("reference", {}), self.device
         )
-        # Loss and curriculum knobs the config may override; an
-        # absent key falls to ControlTrainer's own default, so those
-        # defaults live in one place.
+        # Loss and curriculum knobs the config may override
         overrides = config_overrides(
             train,
             {

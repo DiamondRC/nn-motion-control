@@ -59,25 +59,85 @@ def _z_axis(n_axes: int) -> int | None:
     return 2 if n_axes >= 3 else None
 
 
-def spiral_family(origin, k, radius, angular, z_rate, xy):
+def _tilt_matrix(tilt_x, tilt_y):
     """
-    Anchored circle/helix: starts on origin, sweeps angular rad per step.
+    Per-sample rotation Rx(tilt_x) @ Ry(tilt_y) as [B, 3, 3].
+
+    Tilts a planar (x, y) trajectory out of its plane so it sweeps all
+    three axes instead of a flat x-y circle.
+    """
+
+    cx, sx = torch.cos(tilt_x), torch.sin(tilt_x)
+    cy, sy = torch.cos(tilt_y), torch.sin(tilt_y)
+    z = torch.zeros_like(tilt_x)
+    row0 = torch.stack([cy, z, sy], dim=-1)
+    row1 = torch.stack([sx * sy, cx, -sx * cy], dim=-1)
+    row2 = torch.stack([-cx * sy, sx, cx * cy], dim=-1)
+
+    return torch.stack([row0, row1, row2], dim=1)
+
+
+def spiral_family(
+    origin,
+    k,
+    radius,
+    angular,
+    z_rate,
+    xy,
+    tilt_x=None,
+    tilt_y=None,
+    radius_end=None,
+):
+    """
+    Anchored spiral: starts on origin, sweeps angular rad per step.
+
+    The radius sweeps 'radius' -> 'radius_end' across the horizon, so the
+    path winds into (or out of) a centre — a real vortex; radius_end None
+    keeps the radius constant (a plain circle). z_rate adds a ramp on the
+    third axis (a helix / conical vortex). tilt_x/tilt_y (per-sample
+    radians) rotate the plane out of x-y so it sweeps all three axes.
     """
 
     b, a = origin.shape
+    h = len(k)
     ang = angular[:, None] * k[None, :]  # [B, H]
     x0, y0 = xy
-    pos = origin[:, None, :].expand(b, len(k), a).clone()
-    r = radius[:, None]
-    pos[:, :, x0] = origin[:, x0 : x0 + 1] - r + r * torch.cos(ang)
-    pos[:, :, y0] = origin[:, y0 : y0 + 1] + r * torch.sin(ang)
+    cos, sin = torch.cos(ang), torch.sin(ang)
+    w = angular[:, None]  # [B, 1]
+    r0 = radius[:, None]  # [B, 1] initial radius (anchors the centre)
+    # Radius over time and its per-step rate; constant for a plain circle.
+    if radius_end is None:
+        r = r0
+        dr = torch.zeros_like(r0)
+    else:
+        denom = max(h - 1, 1)
+        prog = k[None, :] / denom  # [1, H] in [0, 1]
+        r = r0 + (radius_end[:, None] - r0) * prog  # [B, H]
+        dr = (radius_end[:, None] - r0) / denom  # [B, 1]
+    pos = origin[:, None, :].expand(b, h, a).clone()
+    # The centre sits one initial radius from the origin, so step 0 (r=r0,
+    # angle 0) lands on the origin regardless of the radius schedule.
+    pos[:, :, x0] = origin[:, x0 : x0 + 1] - r0 + r * cos
+    pos[:, :, y0] = origin[:, y0 : y0 + 1] + r * sin
     vel = torch.zeros_like(pos)
-    vel[:, :, x0] = -r * angular[:, None] * torch.sin(ang)
-    vel[:, :, y0] = r * angular[:, None] * torch.cos(ang)
+    # d/dk of (centre + r(k)[cos, sin]): the moving radius adds the dr term.
+    vel[:, :, x0] = dr * cos - r * sin * w
+    vel[:, :, y0] = dr * sin + r * cos * w
     zc = _z_axis(a)
     if zc is not None:
         pos[:, :, zc] = origin[:, zc : zc + 1] + z_rate[:, None] * k[None, :]
-        vel[:, :, zc] = z_rate[:, None].expand(b, len(k))
+        vel[:, :, zc] = z_rate[:, None].expand(b, h)
+
+    # Rotate the (x, y, z) offset about the anchor so the plane tilts;
+    # anchoring holds since the offset is zero at step 0.
+    if tilt_x is not None and zc is not None:
+        ty = tilt_y if tilt_y is not None else torch.zeros_like(tilt_x)
+        rot = _tilt_matrix(tilt_x, ty)
+        cols = [x0, y0, zc]
+        base = origin[:, None, cols]
+        off = pos[:, :, cols] - base
+        pos[:, :, cols] = base + torch.einsum("bij,bhj->bhi", rot, off)
+        vel[:, :, cols] = torch.einsum("bij,bhj->bhi", rot, vel[:, :, cols])
 
     return pos, vel
 

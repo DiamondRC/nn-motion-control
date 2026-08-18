@@ -112,6 +112,50 @@ def test_mixed_weights_can_select_a_single_family():
     assert torch.allclose(vel[:, -1, :], torch.zeros(B, A), atol=1e-4)
 
 
+def test_spiral_radius_end_winds_into_a_vortex():
+    origin = torch.zeros(B, A)
+    k = torch.arange(H, dtype=torch.float32)
+    r0, w, z = torch.full((B,), 800.0), torch.full((B,), 0.03), torch.zeros(B)
+    pos, vel = spiral_family(
+        origin, k, r0, w, z, (0, 1), radius_end=torch.zeros(B)
+    )
+    assert torch.allclose(pos[:, 0, :], origin, atol=1e-3)  # anchored
+    # Distance from the vortex centre (one radius from the origin) shrinks
+    # from ~radius to ~0 over the horizon.
+    centre = origin.clone()
+    centre[:, 0] -= 800.0
+    dist = (pos[:, :, :2] - centre[:, None, :2]).norm(dim=-1)  # [B, H]
+    assert dist[:, 0].mean() > 700.0  # starts on the rim
+    assert dist[:, -1].max() < 50.0  # ends at the centre
+    # Velocity stays analytic with the radius-rate term (finite difference).
+    fd = pos[:, 1:, :] - pos[:, :-1, :]
+    assert torch.allclose(vel[:, :-1, :], fd, atol=1.5)
+
+
+def test_spiral_tilt_introduces_z_motion_and_stays_anchored():
+    origin = torch.zeros(B, A)
+    k = torch.arange(H, dtype=torch.float32)
+    r, w, z = torch.full((B,), 500.0), torch.full((B,), 0.02), torch.zeros(B)
+    flat, _ = spiral_family(origin, k, r, w, z, (0, 1))
+    tilted, tvel = spiral_family(
+        origin,
+        k,
+        r,
+        w,
+        z,
+        (0, 1),
+        tilt_x=torch.full((B,), 0.6),
+        tilt_y=torch.full((B,), 0.3),
+    )
+    assert torch.allclose(tilted[:, 0, :], origin, atol=1e-3)  # anchored
+    # A flat x-y spiral has no z motion; the tilted plane sweeps z.
+    assert flat[:, :, 2].abs().max() < 1e-3
+    assert tilted[:, :, 2].abs().max() > 50.0
+    # Rotation is linear, so the analytic velocity stays consistent.
+    fd = tilted[:, 1:, :] - tilted[:, :-1, :]
+    assert torch.allclose(tvel[:, :-1, :], fd, atol=0.5)
+
+
 def test_build_family_anchors_and_is_reproducible():
     origin = _origin()
     k = torch.arange(H, dtype=torch.float32)

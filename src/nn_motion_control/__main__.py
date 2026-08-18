@@ -300,8 +300,9 @@ def track(
         "config",
         "--shape",
         help="Reference trajectory: config (the config's own), spiral, "
-        "helix, line, step, smooth, mixed, morph or sequence. spiral and "
-        "step are deterministic; the rest vary with --seed.",
+        "helix, line, step, smooth, mixed, morph or sequence. step and "
+        "helix are deterministic; the rest (spiral's tilt included) vary "
+        "with --seed.",
     ),
     seed: int = typer.Option(
         42, "--seed", help="Seed for the randomised reference shapes."
