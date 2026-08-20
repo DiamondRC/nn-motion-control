@@ -5,7 +5,7 @@ On tensor-core GPUs cuDNN runs conv kernels in NHWC (channels-last), so
 a plain [B, C, L] conv1d spends a large share of its time transposing
 tensors NCHW to NHWC around every convolution. Running the identical
 convolution as a channels-last conv2d (a singleton height dim) lets
-cuDNN use its native NHWC kernels with no transpose — same maths,
+cuDNN use its native NHWC kernels with no transpose - same maths,
 markedly less memory traffic. This module reproduces JsonModel's
 temporal forward that way. It is numerically equivalent (to float
 rounding) to running the stack as conv1d.

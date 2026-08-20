@@ -195,8 +195,8 @@ class Evaluator:
         logger.info(f"{separator}")
         gate_pct = DEFAULT_GATE * 100
         logger.info(
-            f"Per-channel metrics (gate: P95 <= {gate_pct:.0f}% of "
-            f"std; P99 = tail):"
+            f"Per-channel metrics (gate: P95 <= {gate_pct:.0f}% "
+            f"of std; P99 = tail):"
         )
         logger.info(f"{separator}")
 

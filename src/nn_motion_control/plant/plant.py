@@ -2,18 +2,22 @@
 Forward-dynamics plant: wrap a one-step model and roll it forward over a
 horizon.
 
-The plant predicts the position change 'delta P'; a rollout reconstructs the
-state and feeds it back: next_position = current + delta P, and velocity is
-the change in fed position, so velocity stays consistent whether a step is
-free-running or truth-anchored. Commands are exogenous (the recorded DAC
-stream). The reconstruction runs in float32 for numerical stability even
-when the model computes in bf16.
+The plant predicts either the position change (delta form) or the absolute
+next position (absolute form); a rollout reconstructs the state and feeds it
+back. In delta form next_position = current + prediction (an integrator, so a
+prediction bias drifts); in absolute form the prediction is the next position
+directly (self-correcting, no integrator drift). Velocity is the change in
+fed position either way, so it stays consistent whether a step is free-running
+or truth-anchored. Commands are exogenous (the recorded DAC stream). The
+reconstruction runs in float32 for numerical stability even when the model
+computes in bf16.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from typing import Any
 
 import torch
 
@@ -21,8 +25,9 @@ from nn_motion_control.core.checkpoints import load_checkpoint_bundle
 from nn_motion_control.core.config import RunConfiguration
 from nn_motion_control.data.loaders import AllDataInfo, build_rollout_splits
 from nn_motion_control.data.normalize import NormStats
-from nn_motion_control.models.builder import JsonModel
+from nn_motion_control.models.builder import build_model
 from nn_motion_control.plant.rollout import (
+    DecoupledStepper,
     RecurrentStepper,
     RolloutStepper,
     StreamingConvStepper,
@@ -60,8 +65,8 @@ class RolloutLayout:
         commands = [n for n in in_names if system.channel(n).kind == "command"]
         if len(commands) != 1:
             raise NotImplementedError(
-                f"Rollout supports exactly one command channel, found "
-                f"{commands}"
+                f"Rollout supports exactly one command channel, "
+                f"found {commands}"
             )
         if len(config.target_channels) != 1:
             raise NotImplementedError(
@@ -116,6 +121,7 @@ def rollout_splits_from_config(
     val_start_stride: int = 1,
     drop_last: bool = False,
     quiescent_seed: Mapping[str, float] | None = None,
+    capture_seed: Mapping[str, Any] | None = None,
 ) -> AllDataInfo:
     """
     Build rollout splits, sourcing the dataset and column layout from a run
@@ -124,7 +130,7 @@ def rollout_splits_from_config(
     The dataset fields (path, channels, window, split ratios) come from
     'config' and the position/velocity/command columns from 'layout', so a
     caller passes only what varies per run (horizon, batch, device, strides,
-    quiescent seeding).
+    seeding).
     """
 
     return build_rollout_splits(
@@ -146,6 +152,7 @@ def rollout_splits_from_config(
         val_start_stride=val_start_stride,
         drop_last=drop_last,
         quiescent_seed=quiescent_seed,
+        capture_seed=capture_seed,
     )
 
 
@@ -162,11 +169,13 @@ class Plant:
         layout: RolloutLayout,
         device: str = "cpu",
         rollout_kind: str = "windowed",
+        predicts_delta: bool = True,
     ):
         self.model = model
         self.layout = layout
         self.device = device
         self.rollout_kind = rollout_kind
+        self.predicts_delta = predicts_delta
         self._im = input_stats.mean.to(device=device, dtype=torch.float32)
         self._istd = input_stats.std.to(device=device, dtype=torch.float32)
         self._tm = target_stats.mean.to(device=device, dtype=torch.float32)
@@ -183,6 +192,35 @@ class Plant:
         """
 
         return self._istd[self._pos]
+
+    @property
+    def pos_mean(self) -> torch.Tensor:
+        """Per-axis z-score mean of the position inputs (denormalising)."""
+
+        return self._im[self._pos]
+
+    def encode_inputs(
+        self, pos: torch.Tensor, vel: torch.Tensor, dac: torch.Tensor
+    ) -> torch.Tensor:
+        """
+        Normalise physical per-axis (position, velocity, command) into a
+        model input frame [..., F].
+        """
+
+        pos_c, vel_c, dac_c = self._pos, self._vel, self._dac
+        out = pos.new_zeros(pos.shape[:-1] + (self.layout.n_features,))
+        out[..., pos_c] = (pos - self._im[pos_c]) / self._istd[pos_c]
+
+        if vel_c.numel():
+            out[..., vel_c] = (vel - self._im[vel_c]) / self._istd[vel_c]
+        out[..., dac_c] = (dac - self._im[dac_c]) / self._istd[dac_c]
+
+        return out
+
+    def normalise_command(self, dac: torch.Tensor) -> torch.Tensor:
+        """Z-score a physical per-axis command to model units."""
+
+        return (dac - self._im[self._dac]) / self._istd[self._dac]
 
     def seed_state(
         self, warmup: torch.Tensor
@@ -247,7 +285,7 @@ class Plant:
         """
 
         bundle = load_checkpoint_bundle(ckpt_path, device, expected_schema=2)
-        model = JsonModel(config=config).to(device)
+        model = build_model(config).to(device)
         model.load_state_dict(bundle["model_state_dict"])
         model.eval()
 
@@ -267,6 +305,7 @@ class Plant:
             RolloutLayout.from_config(config),
             device,
             rollout_kind=rollout_kind,
+            predicts_delta=config.target_form == "delta",
         )
 
     def make_stepper(self) -> RolloutStepper:
@@ -285,6 +324,8 @@ class Plant:
             return StreamingConvStepper(self.model)
         if self.rollout_kind == "recurrent":
             return RecurrentStepper(self.model)
+        if self.rollout_kind == "decoupled":
+            return DecoupledStepper(self.model)
         raise ValueError(f"Unknown rollout_kind: {self.rollout_kind!r}")
 
     def roll_forward(
@@ -302,7 +343,7 @@ class Plant:
 
         'warmup' [B, F, W] seeds the window; 'dac_future' [B, H, A] is the
         recorded command stream; 'teacher_pos' [B, H, A] (with 'ss_prob' >
-        0) enables scheduled sampling — each step, with probability
+        0) enables scheduled sampling - each step, with probability
         'ss_prob', the truth is fed forward instead of the prediction.
         Returns [B, H, A].
 
@@ -336,8 +377,10 @@ class Plant:
         preds = []
 
         for k in range(horizon):
-            d_p = raw_delta.float() * tstd + tm  # physical ΔP  [B, A]
-            pred_p = cur_p + d_p  # model's next position
+            out = raw_delta.float() * tstd + tm  # physical model output
+            # Delta form integrates the change; absolute form is the next
+            # position directly (self-correcting, no integrator drift).
+            pred_p = cur_p + out if self.predicts_delta else out
             preds.append(
                 (pred_p - im_pos) / istd_pos
             )  # store normalised (for loss)
@@ -390,7 +433,7 @@ class Plant:
         tracking loss (analytic policy gradient).
 
         'reanchor_every' (evaluation only; leave 0 for training) re-anchors
-        the belief to the reference every that-many steps — the full state
+        the belief to the reference every that-many steps - the full state
         update real per-step interferometer feedback gives. It replaces the
         window's position and velocity history (and current
         position/velocity) with the reference, keeping the applied DACs, so
@@ -430,8 +473,8 @@ class Plant:
             if reanchor_every and k > 0 and k % reanchor_every == 0:
                 # Full-state feedback: replace the window's position +
                 # velocity history with the true (reference) trajectory
-                # over the last W steps — what an interferometer
-                # measurement feeds the model — keeping applied DACs, so no
+                # over the last W steps - what an interferometer
+                # measurement feeds the model - keeping applied DACs, so no
                 # channel carries simulator drift across the correction.
                 idx = torch.arange(
                     k - w + 1, k + 1, device=window.device
@@ -455,8 +498,8 @@ class Plant:
             dac_norm = (dac_phys - im_dac) / istd_dac
             last = window[:, :, -1].index_copy(1, dac, dac_norm)
             win = torch.cat([window[:, :, :-1], last.unsqueeze(-1)], dim=2)
-            d_p = self.model(win).float() * tstd + tm
-            next_p = cur_p + d_p
+            out = self.model(win).float() * tstd + tm
+            next_p = cur_p + out if self.predicts_delta else out
             positions.append(next_p)
             dacs.append(dac_phys)
 

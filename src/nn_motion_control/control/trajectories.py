@@ -92,7 +92,7 @@ def spiral_family(
     Anchored spiral: starts on origin, sweeps angular rad per step.
 
     The radius sweeps 'radius' -> 'radius_end' across the horizon, so the
-    path winds into (or out of) a centre — a real vortex; radius_end None
+    path winds into (or out of) a centre - a real vortex; radius_end None
     keeps the radius constant (a plain circle). z_rate adds a ramp on the
     third axis (a helix / conical vortex). tilt_x/tilt_y (per-sample
     radians) rotate the plane out of x-y so it sweeps all three axes.
@@ -148,9 +148,7 @@ def line_family(origin, k, direction, amplitude, angular):
     line scan).
     """
 
-    s = torch.sin(
-        angular[:, None] * k[None, :]
-    )  # sin(0) = 0 -> starts on origin
+    s = torch.sin(angular[:, None] * k[None, :])  # sin(0) = 0 -> starts at orig
     c = torch.cos(angular[:, None] * k[None, :])
     span = (amplitude[:, None] * s)[:, :, None] * direction[:, None, :]
     pos = origin[:, None, :] + span
@@ -167,9 +165,7 @@ def step_family(origin, k, delta, start, duration):
     hold.
     """
 
-    s = ((k[None, :] - start[:, None]) / duration[:, None]).clamp(
-        0.0, 1.0
-    )  # [B, H]
+    s = ((k[None, :] - start[:, None]) / duration[:, None]).clamp(0.0, 1.0)
     smooth = s * s * (3.0 - 2.0 * s)
     pos = origin[:, None, :] + delta[:, None, :] * smooth[:, :, None]
     inside = (k[None, :] >= start[:, None]) & (

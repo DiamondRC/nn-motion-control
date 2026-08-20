@@ -230,8 +230,10 @@ def _log_examples(
     logger.info("")
     if data_rate_hz:
         logger.info(
-            "Example predictions vs truth at step %d (%.2f ms into "
-            "the rollout)%s:",
+            (
+                "Example predictions vs truth at step %d "
+                "(%.2f ms into the rollout)%s:"
+            ),
             step,
             step * 1000.0 / data_rate_hz,
             suffix,
@@ -261,8 +263,8 @@ def _log_examples(
                 is_nonzero = abs(t) > PCT_DIFF_ZERO_EPS
                 pct = f"{100 * d / t:9.1f}" if is_nonzero else f"{'n/a':>9}"
                 logger.info(
-                    f"{s:>6} {axis:>4} | {p:>17.3f} | {t:>17.3f} | "
-                    f"{d:>15.3f} | {pct}"
+                    f"{s:>6} {axis:>4} | {p:>17.3f} | "
+                    f"{t:>17.3f} | {d:>15.3f} | {pct}"
                 )
             logger.info(rule)  # per-sample separator for readability
 

@@ -16,7 +16,7 @@ from nn_motion_control.core.config import RunConfiguration
 from nn_motion_control.core.seeding import seed_everything
 from nn_motion_control.data import build_time_series_splits
 from nn_motion_control.eval.evaluate import Evaluator
-from nn_motion_control.models.builder import JsonModel
+from nn_motion_control.models.builder import build_model
 from nn_motion_control.models.channels_last import is_channels_last_able
 from nn_motion_control.plant.plant import (
     Plant,
@@ -167,7 +167,7 @@ class CompleteRun:
         )
 
     def _create_model(self):
-        self.model = JsonModel(config=self.m)
+        self.model = build_model(self.m)
         self.model.to(self.device)
 
         # Optional warm start: load weights from a prior checkpoint
@@ -322,8 +322,8 @@ class CompleteRun:
         if self.is_rollout:
             # The one-step evaluator cannot consume rollout batches.
             self.logger.info(
-                "Rollout training complete. Run the error-vs-horizon "
-                "eval separately."
+                "Rollout training complete. "
+                "Run the error-vs-horizon eval separately."
             )
             return  # awesome python
 

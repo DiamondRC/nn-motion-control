@@ -1,6 +1,7 @@
 import logging
 import os
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 import torch.nn as nn
 
@@ -8,6 +9,9 @@ from nn_motion_control.core.config import RunConfiguration
 from nn_motion_control.models.layers.heads import AvgPoolLastK, LastFrame
 from nn_motion_control.models.layers.tcn import TemporalBlock
 from nn_motion_control.models.ssm import DiagSSM
+
+if TYPE_CHECKING:
+    from nn_motion_control.models.decoupled import DecoupledSSMPlant
 
 logger = logging.getLogger(os.path.basename(__file__))
 
@@ -57,6 +61,22 @@ class ModelComponents:
             raise ValueError(f"Unsupported layer {name}.")
 
         return entry.get("recurrent", False)
+
+
+def build_model(
+    config: RunConfiguration,
+) -> "JsonModel | DecoupledSSMPlant":
+    """
+    Build the plant model for a config: a decoupled routed model when the
+    architecture declares one, else the flat JsonModel stack.
+    """
+
+    if config.is_decoupled:
+        from nn_motion_control.models.decoupled import DecoupledSSMPlant
+
+        return DecoupledSSMPlant(config)
+
+    return JsonModel(config=config)
 
 
 class JsonModel(nn.Module):
@@ -112,8 +132,8 @@ class JsonModel(nn.Module):
                 name, args = next(iter(layer.items()))
                 return name, list(args) if args else []
             raise TypeError(
-                f"Unsupported layer spec {layer!r}; expected a str or "
-                f"single-key dict."
+                f"Unsupported layer spec {layer!r}, "
+                f"expected a str or single-key dict."
             )
 
         # Temporal vs MLP mode is inferred from the first layer.

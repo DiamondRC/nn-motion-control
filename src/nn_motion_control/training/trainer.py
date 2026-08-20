@@ -370,8 +370,8 @@ class Trainer:
 
                     if epochs_no_improve >= self.patience:
                         logger.info(
-                            f"Early stopping triggered after "
-                            f"{epoch + 1} epochs."
+                            f"Early stopping triggered after {epoch + 1} "
+                            f"epochs."
                         )
                         logger.info(
                             f"The best model was at epoch {self.best_epoch}."

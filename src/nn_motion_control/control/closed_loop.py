@@ -1,17 +1,6 @@
 """
 Closed-loop evaluation: run a control policy inside the plant and score the
 tracking.
-
-The plant advances one step per call given the DAC a policy produces from
-the current state (see Plant.closed_loop_rollout). This module supplies the
-pieces around that loop: reference-trajectory generators, baseline policies
-to sanity-check the harness (before any learned controller), and tracking
-metrics.
-
-Everything runs at the plant's rate, one control step per plant transition.
-The 200 kHz-vs-20 kHz servo sub-stepping is a deliberate later step, starting
-1:1 keeps the number of unvalidated assumptions minimal while the loop is
-brought up.
 """
 
 from __future__ import annotations
@@ -21,10 +10,6 @@ from dataclasses import dataclass
 import torch
 
 from nn_motion_control.eval.tables import PERCENTILES
-
-# A policy maps the current physical (position, velocity, reference), each
-# [B, A], to a physical DAC command [B, A]. Matches
-# Plant.closed_loop_rollout's expectation.
 
 
 def zero_policy(
@@ -77,8 +62,8 @@ def constant_reference(
     """
     A held-target reference [B, H, A] from a per-axis target [A] or [B, A].
 
-    A constant target is the regulation / step-response case: hold (or step
-    to) a fixed position for horizon steps.
+    A constant target is the regulation / step-response case:
+    hold (or step to) a fixed position for horizon steps.
     """
 
     if target.dim() == 1:
@@ -95,9 +80,10 @@ def tracking_metrics(
     """
     Per-axis tracking summary from a closed-loop rollout.
 
-    positions/reference are [B, H, A] (physical). Returns per-axis [A]
-    tensors: root-mean-square tracking error over the whole horizon, and the
-    mean absolute error at the final step (a coarse settling proxy).
+    positions/reference are [B, H, A] (physical).
+    Returns per-axis [A] tensors:
+    root-mean-square tracking error over the whole horizon, and the
+    mean absolute error at the final step.
     """
 
     err = positions - reference  # [B, H, A]
@@ -114,12 +100,6 @@ def tracking_percentiles(
 ) -> dict[float, torch.Tensor]:
     """
     Per-axis percentiles of the per-rollout RMS tracking error.
-
-    positions/reference are [B, H, A]. Each rollout's RMS error over the
-    horizon is taken, then percentiles across the batch per axis. The
-    default is a latency-style five-number summary (P50/P95/P99/P99.9/max):
-    P50-P99 close means predictable, P99.9 exposes the tail and max the
-    worst case. Returns {pct: [A]}.
     """
 
     per_rollout_rms = (
@@ -136,7 +116,7 @@ def tracking_percentiles(
 
 
 def _batched(vec: torch.Tensor, batch: int | None) -> torch.Tensor:
-    """Broadcast a per-axis [A] vector to [B, A] ([B, A] passes through)."""
+    """Broadcast a per-axis [A] vector to [B, A]."""
 
     if vec.dim() == 1:
         if batch is None:
@@ -165,6 +145,7 @@ def step_reference(
     amp = torch.as_tensor(amplitude, dtype=origin.dtype, device=origin.device)
     b, a = origin.shape
     traj = origin.unsqueeze(1).expand(b, horizon, a).clone()
+
     if step_at < horizon:
         traj[:, step_at:, :] = (origin + amp).unsqueeze(1)
 
@@ -180,8 +161,9 @@ def settling_time(
     """
     Per-axis time (steps times dt) after which every sample stays within tol.
 
-    positions/reference are [B, H, A]. An axis that never settles (some
-    sample outside tol at the final step) returns inf.
+    positions/reference are [B, H, A].
+    An axis that never settles (some sample outside tol at the final step)
+    returns inf.
     """
 
     within = ((positions - reference).abs() <= tol).all(dim=0)  # [H, A]
@@ -209,11 +191,6 @@ def overshoot(
     """
     Per-axis peak excursion past the target, as a fraction of the
     commanded step.
-
-    The step is reference[:, -1] - origin, overshoot is the largest move
-    beyond the target in the step's direction over the horizon. Axes with
-    no commanded step (zero amplitude) report zero. positions/reference are
-    [B, H, A].
     """
 
     origin = _batched(origin, batch)
@@ -237,11 +214,6 @@ def disturbance_response(
     """
     Per-axis peak error after a disturbance and the time to re-settle
     within tol.
-
-    Pure scorer over a rollout in which the caller has injected the
-    disturbance at disturb_step (e.g. an impulse on the DAC or a jump in
-    the reference). Returns {"peak": [A], "recovery": [A]}, recovery is
-    measured from disturb_step.
     """
 
     post_err = (positions - reference).abs()[:, disturb_step:, :]  # [B, H', A]

@@ -48,8 +48,8 @@ def _resolve_cfg(path: str | None, purpose: str) -> str:
 
     if not is_interactive():
         raise typer.BadParameter(
-            "No config path given and stdin is not a terminal; pass one "
-            "explicitly."
+            "No config path given and stdin is not a terminal: "
+            "pass one explicitly."
         )
 
     return pick_config(purpose)
@@ -68,8 +68,8 @@ def _interactive_setup(
 
     if not is_interactive():
         raise typer.BadParameter(
-            "No config path given and stdin is not a terminal; pass one "
-            "explicitly."
+            "No config path given and stdin is not a terminal: "
+            "pass one explicitly."
         )
 
     return interactive_setup(command, purpose, options)
@@ -105,13 +105,11 @@ def horizon(
     steps: int = typer.Option(256, help="Rollout horizon to evaluate."),
     max_batches: int = typer.Option(
         32,
-        help="Test batches, strided across the full set (more = stabler "
-        "P99 tail).",
+        help="Test batches, strided across the full set.",
     ),
     example_step: int = typer.Option(
         0,
-        help="Compounded-regime step for worked examples (0 = auto: "
-        "mid-rollout).",
+        help="Compounded-regime step for worked examples.",
     ),
     early_step: int = typer.Option(
         1, help="Early (noise-floor) step for worked examples."

@@ -15,7 +15,7 @@ from nn_motion_control.eval.reliability import (
 
 
 class _Linear(nn.Module):
-    """f(x) = x @ W — a map whose Jacobian is exactly W^T everywhere."""
+    """f(x) = x @ W - a map whose Jacobian is exactly W^T everywhere."""
 
     def __init__(self, weight: torch.Tensor):
         super().__init__()

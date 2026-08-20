@@ -8,6 +8,7 @@ import logging
 import os
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from typing import Any
 
 import h5py
 import numpy as np
@@ -16,6 +17,10 @@ import torch
 from torch.utils.data import DataLoader, Dataset
 
 from nn_motion_control.data._hdf5 import as_dataset
+from nn_motion_control.data.capture_seeds import (
+    DEFAULT_SEED_STRIDE,
+    append_capture_seeds,
+)
 from nn_motion_control.data.dataset import (
     DatasetMetadata,
     H5TimeSeriesDataset,
@@ -290,6 +295,7 @@ def build_rollout_splits(
     drop_last: bool = False,
     vel_cols: list[int] | None = None,
     quiescent_seed: Mapping[str, float] | None = None,
+    capture_seed: Mapping[str, Any] | None = None,
 ) -> AllDataInfo:
     """
     Build leakage-aware rollout splits as RolloutWindowLoaders on the
@@ -311,6 +317,11 @@ def build_rollout_splits(
     a controller starts from, via 'select_quiescent_starts'; 'vel_cols'
     supplies the velocity channels it reads. The plant path leaves both
     unset and sees every window.
+
+    'capture_seed' ({"paths", "axis", "decimate", "stride", "val_fraction"})
+    additionally seeds train/val rollouts from recorded closed-loop
+    captures, covering the mid-scan operating states the open-loop
+    identification set never visits (see 'data/capture_seeds.py').
     """
 
     ensure_enough_ram(h5_path)
@@ -360,9 +371,30 @@ def build_rollout_splits(
         train_idx, val_idx = quiescent(train_idx), quiescent(val_idx)
         if len(train_idx) == 0 or len(val_idx) == 0:
             raise ValueError(
-                "Quiescent-seed filter left no windows; relax "
-                "max_dac / max_speed"
+                "Quiescent-seed filter left no windows, "
+                "relax max_dac / max_speed"
             )
+
+    if capture_seed is not None:
+        inputs, seeds = append_capture_seeds(
+            inputs,
+            *dataset.input_norm,
+            capture_paths=list(capture_seed["paths"]),
+            axis=int(capture_seed.get("axis", 0)),
+            window_size=window_size,
+            max_horizon=max_horizon,
+            pos_cols=pos_cols,
+            vel_cols=vel_cols or [],
+            dac_cols=dac_cols,
+            decimate=int(capture_seed.get("decimate", 1)),
+            stride=int(capture_seed.get("stride", DEFAULT_SEED_STRIDE)),
+        )
+        # Hold out a tail slice of the capture seeds for validation, so
+        # val measures the same operating states without training on them.
+        val_frac = float(capture_seed.get("val_fraction", 0.1))
+        cut = max(1, int(len(seeds) * (1.0 - val_frac)))
+        train_idx = np.concatenate([train_idx, seeds[:cut]])
+        val_idx = np.concatenate([val_idx, seeds[cut:]])
 
     def mk(
         idx: np.ndarray, shuffle: bool, stride: int = 1

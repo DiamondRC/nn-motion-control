@@ -61,8 +61,7 @@ class HardwareModel:
 
     Defaults match the target board: 125 MHz fabric, ~360 usable DSP48E1
     slices, the DSP's native 25x18 operand ports and 48-bit accumulator.
-    BRAM capacity and read bandwidth are optional gates (left None when
-    the controller owns the whole board).
+    BRAM capacity and read bandwidth are optional gates.
     """
 
     clock_hz: float = 125_000_000.0
@@ -199,13 +198,9 @@ def dense_layers(
 
     n_layers = len(dims) - 1
     if n_layers < 1:
-        raise ValueError(
-            "An MLP needs at least an input and an output dimension"
-        )
+        raise ValueError("An MLP needs at an input and an output dimension")
     if len(weight_bits) != n_layers or len(act_bits) != n_layers:
-        raise ValueError(
-            "Weight_bits and act_bits must have one entry per layer"
-        )
+        raise ValueError("Must have one entry per layer")
 
     return [
         LayerCost.dense(dims[i], dims[i + 1], weight_bits[i], act_bits[i], hw)
@@ -218,11 +213,6 @@ class ResourceReport:
     """
     Whether a controller fits the hardware at a servo rate, and by how
     much.
-
-    'cycles_needed' assumes the work parallelises across 'dsp_budget'
-    DSPs, 'max_servo_rate_hz' is the rate at which that fully-parallel
-    pass just fills the step. 'bram_bits_per_cycle' is a
-    weight-read-bandwidth proxy for the same pass.
     """
 
     layers: tuple[LayerCost, ...]

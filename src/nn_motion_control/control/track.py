@@ -2,11 +2,11 @@
 Closed-loop tracking evaluation for a trained controller.
 
 Loads the controller checkpoint and its frozen plant, seeds from quiescent
-relaxation holds (the operating regime), rolls the config's reference
-trajectory through the loop, logs per-axis position + velocity RMS over the
-trained horizon and an error-vs-step ladder (which exposes compounding past
-that horizon), then draws a position-vs-step plot, a 3D animated trajectory
-trace, and a native interactive 3D window (rotatable).
+relaxation holds, rolls the config's reference trajectory through the loop,
+logs per-axis position + velocity RMS over the trained horizon and an
+error-vs-step ladder (which exposes compounding past that horizon),
+then draws a position-vs-step plot, a 3D animated trajectory trace,
+and a native interactive 3D window.
 """
 
 from __future__ import annotations
@@ -272,8 +272,8 @@ def run_track(
     reference, ref_v = ref_gen(origin, viz_h, ref_generator)
 
     rollout_msg = (
-        f"Rolling out {warmup.shape[0]} seeds x {viz_h} steps "
-        f"(reanchor={reanchor})"
+        f"Rolling out {warmup.shape[0]} seeds x "
+        f"{viz_h} steps (reanchor={reanchor})"
     )
     with spinner(rollout_msg), torch.no_grad():
         pos_ctrl, _ = plant.closed_loop_rollout(
@@ -294,8 +294,7 @@ def run_track(
         else ""
     )
     logger.info(
-        "Closed-loop tracking: %s (%d quiescent seeds, %.0f Hz; "
-        "trained horizon %d%s)",
+        "Closed-loop tracking: %s (%d seeds, %.0f Hz; trained horizon %d%s)",
         config.model_name,
         warmup.shape[0],
         config.servo_rate_hz,
@@ -341,13 +340,9 @@ def run_track(
         to_nm,
         "nm/step",
     )
-    # Error vs step -- a horizon-averaged RMS hides that error compounds
+    # Error vs step: a horizon-averaged RMS hides that error compounds
     # past the trained horizon. Always sample quarter points across the
-    # whole setpoint so the mid-trajectory peak is never skipped (a small
-    # re-anchor stride otherwise collapses the ladder onto the first few
-    # steps, hiding the worst excursion between two easy endpoints). When
-    # re-anchoring, add the pre-anchor peak and post-anchor point so
-    # stationarity -- same excursion early vs late -- is directly visible.
+    # whole setpoint so the mid-trajectory peak is never skipped.
     cand = [1, viz_h // 4, viz_h // 2, (3 * viz_h) // 4, viz_h - 1]
     # Trained-horizon milestones (and a couple past it) catch the early-mid
     # region the quarter points are too coarse for, in either mode.
@@ -396,10 +391,7 @@ def run_track(
             config,
             f"{base}_track.svg",
         )
-        # The error-magnified view: signed residual (controller -
-        # reference) per axis over the full setpoint, in nm -- resolves
-        # single-digit-nm tracking regardless of the trajectory's physical
-        # scale, with re-anchor points marked.
+        # The error-magnified view
         _plot_error(
             pos_ctrl[idx],
             reference[idx],

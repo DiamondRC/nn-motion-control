@@ -62,8 +62,10 @@ def build_valid_window_starts(
             starts.append(np.arange(s, last_start + 1, dtype=np.int64))
         else:
             logger.warning(
-                "Segment %d (length %d) is shorter than "
-                "window+horizon=%d; skipped",
+                (
+                    "Segment %d (length %d) is shorter than window+horizon=%d, "
+                    "skipped"
+                ),
                 k,
                 e - s,
                 reserve,

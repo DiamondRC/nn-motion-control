@@ -1,21 +1,9 @@
 """
-Pluggable rollout steppers: how a model advances one step during a free-run.
+Rollout steppers: how a model advances one step during a free-run.
 
-'Plant.roll_forward' owns the physical reconstruction (delta P to position,
-velocity from fed position, scheduled sampling, building the next input
-frame). The only part that differs between architectures is how the model
-itself is advanced one step: a windowed conv/MLP recomputes the whole
-window, a streaming conv updates cached activations, a recurrent cell steps
-a hidden state. A 'RolloutStepper' isolates exactly that:
-
-  * 'reset(warmup)' primes any internal state from the seed window and
-    returns the model's raw (normalised) delta for step 0;
-  * 'step(frame)' advances the model by one new input frame and returns the
-    raw (normalised) delta for the next step.
-
-A stepper is a lightweight per-rollout helper that references 'plant.model'
-(the trainable, possibly compiled/channels-last module); it is never a
-parameter container.
+A windowed conv/MLP recomputes the whole window,
+a streaming conv updates cached activations, a recurrent cell steps
+a hidden state.
 """
 
 from __future__ import annotations
@@ -29,6 +17,14 @@ import torch.nn.functional as F  # noqa: N812  (conventional alias)
 from nn_motion_control.models.layers.heads import AvgPoolLastK, LastFrame
 from nn_motion_control.models.layers.tcn import TemporalBlock
 from nn_motion_control.models.ssm import DiagSSM
+
+__all__ = [
+    "RolloutStepper",
+    "WindowedStepper",
+    "StreamingConvStepper",
+    "RecurrentStepper",
+    "DecoupledStepper",
+]
 
 
 @runtime_checkable
@@ -245,9 +241,51 @@ class StreamingConvStepper:
         return self._apply_head(self._out)
 
 
+class DecoupledStepper:
+    """
+    O(1)/step stepper: stream the dynamic SSM, add the static position
+    term each step.
+    """
+
+    def __init__(self, model: nn.Module):
+        m = cast(Any, model)
+        self.dyn = [cast(DiagSSM, layer) for layer in m.dynamic]
+        self.static = m.static
+        self.head = m.head
+        self.dyn_cols = m.dyn_cols
+        self.static_cols = m.static_cols
+        self._states: list[torch.Tensor] = []
+
+    def _readout(
+        self, dyn_feat: torch.Tensor, pos: torch.Tensor
+    ) -> torch.Tensor:
+        if self.static is not None:
+            return self.head(torch.cat([dyn_feat, self.static(pos)], dim=-1))
+
+        return self.head(dyn_feat)
+
+    def reset(self, warmup: torch.Tensor) -> torch.Tensor:
+        u = warmup[:, self.dyn_cols, :].transpose(1, 2)  # [B, W, d_dyn]
+        self._states = []
+
+        for layer in self.dyn:
+            u, h_last = layer.scan(u)
+            self._states.append(h_last)
+
+        return self._readout(u[:, -1, :], warmup[:, self.static_cols, -1])
+
+    def step(self, frame: torch.Tensor) -> torch.Tensor:
+        u_t = frame[:, self.dyn_cols]
+
+        for i, layer in enumerate(self.dyn):
+            u_t, self._states[i] = layer.step(u_t, self._states[i])
+
+        return self._readout(u_t, frame[:, self.static_cols])
+
+
 class RecurrentStepper:
     """
-    O(1)/step stepper for a recurrent (SSM) model — carries the state, no
+    O(1)/step stepper for a recurrent (SSM) model - carries the state, no
     window.
 
     'reset' runs each 'DiagSSM' layer's parallel scan over the seed window
@@ -265,6 +303,7 @@ class RecurrentStepper:
         )
         if not ssm_layers:
             raise ValueError("RecurrentStepper expects a leading DiagSSM stack")
+
         self.ssm = [cast(DiagSSM, layer) for layer in ssm_layers]
         self.head = nn.Sequential(*head_layers)
         self.pool = _readout_pool(head_layers)

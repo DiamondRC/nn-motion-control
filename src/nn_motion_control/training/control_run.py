@@ -10,6 +10,7 @@ logs the FPGA resource cost of the result.
 
 from __future__ import annotations
 
+import glob
 import logging
 import math
 import os
@@ -307,8 +308,10 @@ class ControlRun:
         for reason in report.reasons:
             self.logger.info("Resource: %s", reason)
         self.logger.info(
-            "Controller cost: params=%d, BRAM bits=%d, DSP-cycles=%d, "
-            "max rate=%.0f Hz",
+            (
+                "Controller cost: params=%d, BRAM bits=%d, "
+                "DSP-cycles=%d, max rate=%.0f Hz"
+            ),
             report.params,
             report.bram_bits,
             report.dsp_cycles,
@@ -351,4 +354,23 @@ class ControlRun:
             # operating start), not the plant-ID excitation transients
             # that fill an arbitrary window.
             quiescent_seed=train.get("seed_quiescence"),
+            # Additionally seed from recorded closed-loop captures, the
+            # mid-scan operating states the open-loop ID set never visits.
+            capture_seed=self._capture_seed(train.get("seed_captures")),
         )
+
+    def _capture_seed(self, spec: dict | None) -> dict | None:
+        """
+        Resolve a capture-seed spec's glob into concrete capture paths.
+        """
+
+        if not spec:
+            return None
+
+        pattern = self.config.resolve_path(str(spec["glob"]))
+        paths = sorted(glob.glob(pattern, recursive=True))
+        if not paths:
+            raise ValueError(f"No captures matched: {pattern}")
+        limit = int(spec.get("max_files", len(paths)))
+
+        return {**spec, "paths": paths[:limit]}

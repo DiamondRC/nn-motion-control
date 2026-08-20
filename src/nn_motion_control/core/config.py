@@ -154,7 +154,12 @@ class RunConfiguration:
 
         # Architecture + I/O (channel names -> concrete dataset labels via
         # the system)
-        self.hidden_layers = arch["hidden_layers"]
+        # A decoupled model routes its inputs internally (a recurrent stack
+        # on the bounded channels, a static path on position), so it carries
+        # its own layer sub-spec instead of one flat 'hidden_layers' stack.
+        self.is_decoupled = "decoupled" in arch
+        self.decoupled: dict[str, Any] | None = arch.get("decoupled")
+        self.hidden_layers = arch.get("hidden_layers", [])
         self.window_size = arch.get("window_size", 1)
         if self.window_size < 1:
             raise ValueError(f"{self.window_size=} must be >= 1")
@@ -165,19 +170,32 @@ class RunConfiguration:
         self.target_channels = list(cfg["targets"].keys())
         self.input_params = self.system.labels(cfg["inputs"])
         self.target_params = self._expand_targets(cfg["targets"])
+        # One prediction form across targets: the rollout reconstruction
+        # either integrates a delta or takes the absolute next state.
+        forms = {self._target_form(n, s) for n, s in cfg["targets"].items()}
+        if len(forms) != 1:
+            raise ValueError("Targets must share one prediction form")
+        self.target_form = forms.pop()
 
-        self.input_size = list(self.hidden_layers[0].values())[0][0]
-        self.target_size = list(self.hidden_layers[-1].values())[0][-1]
         n_in, n_tgt = len(self.input_params), len(self.target_params)
         if n_in == 0 or n_tgt == 0:
             raise ValueError(
                 "Inputs and targets must each expand to >= 1 channel"
             )
-        if self.input_size != n_in:
-            raise ValueError(
-                f"Model input size ({self.input_size}) must match the expanded "
-                f"inputs ({n_in})"
-            )
+        if self.is_decoupled:
+            # The model consumes all inputs (routing them internally) and its
+            # head sizes the output; only the output must match the targets.
+            head = arch["decoupled"]["head"]
+            self.input_size = n_in
+            self.target_size = list(head[-1].values())[0][-1]
+        else:
+            self.input_size = list(self.hidden_layers[0].values())[0][0]
+            self.target_size = list(self.hidden_layers[-1].values())[0][-1]
+            if self.input_size != n_in:
+                raise ValueError(
+                    f"Model input size ({self.input_size}) must match the "
+                    f"expanded inputs ({n_in})"
+                )
         if self.target_size != n_tgt:
             raise ValueError(
                 f"Model output size ({self.target_size}) must match the "

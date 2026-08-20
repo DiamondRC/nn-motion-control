@@ -153,6 +153,11 @@ class ControllerConfig:
 
         return rel if os.path.isabs(rel) else str(self._dir / rel)
 
+    def resolve_path(self, rel: str) -> str:
+        """Public path resolution for callers outside this module."""
+
+        return self._resolve(rel)
+
 
 def build_controller_net(
     config: ControllerConfig,

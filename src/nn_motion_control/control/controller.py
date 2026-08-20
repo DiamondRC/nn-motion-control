@@ -246,7 +246,7 @@ class ControllerNet(nn.Module):
 
     def resource_layers(self) -> list[LayerCost]:
         """
-        Per-layer FPGA cost (bridges to 'control.resource.score_controller').
+        Per-layer FPGA cost.
         """
 
         return dense_layers(
@@ -285,8 +285,7 @@ class NNPolicy:
     '(position, velocity, reference) -> dac' policy contract, bounding
     the command to the per-axis DAC safe range.
 
-    The net's raw output is mapped to 'safe_range' with a 'tanh' (a
-    smooth bounded head): 'dac = centre + half_range * tanh(raw)'.
+    The net's raw output is mapped to 'safe_range' with a 'tanh'.
     Unlike a hard clamp this keeps a live gradient everywhere, so the
     policy can always be improved: a hard clamp saturates and zeroes the
     policy gradient once the command hits a rail.

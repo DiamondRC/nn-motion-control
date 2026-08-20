@@ -10,7 +10,7 @@ L positions replaces L - W + 1 length-W ones.
 
 This is not numerically identical to windowed training. The windowed
 model pools conv features that were zero-padded at each window's start.
-The chunked model gives those positions their real history — the
+The chunked model gives those positions their real history - the
 streaming-consistent computation the FPGA actually runs at deploy time.
 It is therefore an opt-in modelling variant, gated on accuracy, not a
 drop-in speedup.
