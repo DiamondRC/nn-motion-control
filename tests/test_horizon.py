@@ -5,14 +5,17 @@ Error-vs-horizon eval: error collection, curve reduction, resolution lookup.
 import numpy as np
 import torch
 
-from nn_motion_control.core.config import RunConfiguration
+from nn_motion_control.core.config import (
+    RunConfiguration,
+    counts_to_nm,
+    position_to_nm,
+)
 from nn_motion_control.data.normalize import NormStats
 from nn_motion_control.eval.horizon import (
     collect_horizon_errors,
     collect_horizon_trajectories,
     horizon_channel_table,
     horizon_curves,
-    position_resolution,
 )
 from nn_motion_control.plant.plant import Plant, RolloutLayout
 
@@ -113,8 +116,17 @@ def test_trajectories_and_channel_table():
     assert np.isclose(table[h][1].p99_abs, 0.5)
 
 
-def test_position_resolution_from_config():
+def test_position_to_nm_from_config():
     rc = RunConfiguration("examples/deltabot/configs/plant_tcn.json")
-    res = position_resolution(rc)
-    assert res.shape == (3,)
-    assert np.allclose(res, 0.256e-9)  # interferometer resolution, m per count
+    factor = position_to_nm(rc)
+    assert factor.shape == (3,)
+    # The dataset stores position already in nm, so display is identity.
+    assert np.allclose(factor, 1.0)
+
+
+def test_counts_to_nm_from_config():
+    rc = RunConfiguration("examples/deltabot/configs/plant_tcn.json")
+    factor = counts_to_nm(rc)
+    assert factor.shape == (3,)
+    # Interferometer resolution 0.256e-9 m/count -> 0.256 nm/count.
+    assert np.allclose(factor, 0.256)

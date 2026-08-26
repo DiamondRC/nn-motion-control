@@ -18,11 +18,11 @@ clock_hz = 125_000_000
 
 [channels.position]
 kind       = "measured"
-unit       = "m"
+unit       = "nm"                # dataset stores position in nm (already scaled)
 per_axis   = true
 label      = "{axis}_pos"
-limits     = [-0.004, 0.004]
-resolution = 0.256e-9 # Interferometer
+limits     = [-4_000_000, 4_000_000] # +/-4 mm travel, in nm
+resolution = 0.256e-9 # Interferometer, m/count (counts -> nm for raw captures)
 
 [channels.position.noise_rms]
 x = 0.0

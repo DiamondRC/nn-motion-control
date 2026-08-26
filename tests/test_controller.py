@@ -28,6 +28,49 @@ def _net(
     return ControllerNet(in_features, out_features, list(hidden), quant)
 
 
+def test_integral_policy_carries_and_resets_state():
+    # 2 axes, 1 base feature + 2 integral taps -> 6 inputs.
+    net = _net(in_features=2 * (1 + 2), out_features=2, hidden=(8,))
+    pol = NNPolicy(
+        net,
+        FeatureSpec(("position",)),
+        torch.tensor([[-1.0, 1.0]] * 2),
+        2,
+        integral_lambdas=[0.9, 0.99],
+    )
+    pos = torch.zeros(4, 2)
+    ref = torch.full((4, 2), 5.0)
+    z = torch.zeros(4, 2)
+    pol.reset(4, "cpu")
+    out = pol(pos, z, ref, z)
+    assert out.shape == (4, 2)
+    assert pol._s is not None and pol._s.shape == (4, 2, 2)
+    # A constant error grows the EMA each step; reset returns it to zero.
+    first = pol._s.clone()
+    pol(pos, z, ref, z)
+    assert (pol._s.abs() > first.abs()).all()
+    pol.reset(4, "cpu")
+    assert float(pol._s.abs().sum()) == 0.0
+
+
+def test_integral_policy_rollout_is_differentiable():
+    net = _net(in_features=1 * (1 + 1), out_features=1, hidden=(4,))
+    pol = NNPolicy(
+        net,
+        FeatureSpec(("error",)),
+        torch.tensor([[-1.0, 1.0]]),
+        1,
+        integral_lambdas=[0.95],
+    )
+    pol.reset(3, "cpu")
+    ref = torch.randn(3, 1)
+    pos = torch.zeros(3, 1, requires_grad=True)
+    z = torch.zeros(3, 1)
+    loss = torch.stack([pol(pos, z, ref, z) for _ in range(5)]).pow(2).mean()
+    loss.backward()
+    assert next(net.parameters()).grad is not None
+
+
 def test_feature_assembly_is_axis_major():
     spec = FeatureSpec(("position", "velocity", "error"))
     pos = torch.tensor([[1.0, 2.0]])  # [B=1, A=2]
@@ -131,7 +174,7 @@ def test_policy_is_differentiable_through_net():
 
 def test_policy_rejects_mismatched_shapes():
     net = _net(in_features=6, out_features=2, hidden=(8,))
-    with pytest.raises(ValueError, match="axes\\*features"):
+    with pytest.raises(ValueError, match="axes\\*\\(features"):
         NNPolicy(
             net, FeatureSpec(("position",)), torch.zeros(2, 2), 2
         )  # 2*1 != 6

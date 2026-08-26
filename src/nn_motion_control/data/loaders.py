@@ -296,6 +296,7 @@ def build_rollout_splits(
     vel_cols: list[int] | None = None,
     quiescent_seed: Mapping[str, float] | None = None,
     capture_seed: Mapping[str, Any] | None = None,
+    capture_pos_scale: np.ndarray | None = None,
 ) -> AllDataInfo:
     """
     Build leakage-aware rollout splits as RolloutWindowLoaders on the
@@ -376,11 +377,19 @@ def build_rollout_splits(
             )
 
     if capture_seed is not None:
+        axis = int(capture_seed.get("axis", 0))
+        # Captures are raw encoder counts; scale the recorded axis to the
+        # dataset's position unit (nm) before seeding.
+        pos_scale = (
+            float(capture_pos_scale[axis])
+            if capture_pos_scale is not None
+            else 1.0
+        )
         inputs, seeds = append_capture_seeds(
             inputs,
             *dataset.input_norm,
             capture_paths=list(capture_seed["paths"]),
-            axis=int(capture_seed.get("axis", 0)),
+            axis=axis,
             window_size=window_size,
             max_horizon=max_horizon,
             pos_cols=pos_cols,
@@ -388,6 +397,7 @@ def build_rollout_splits(
             dac_cols=dac_cols,
             decimate=int(capture_seed.get("decimate", 1)),
             stride=int(capture_seed.get("stride", DEFAULT_SEED_STRIDE)),
+            pos_scale=pos_scale,
         )
         # Hold out a tail slice of the capture seeds for validation, so
         # val measures the same operating states without training on them.

@@ -75,6 +75,39 @@ def _interactive_setup(
     return interactive_setup(command, purpose, options)
 
 
+def _resolve_dataset(source: str | None, system_path: str):
+    """
+    Resolve a dataset source to a (SystemSpec, data path) pair.
+
+    A '.json' source (or an interactive pick) is an artifact config: its
+    referenced dataset and SystemSpec are used. Any other source is a dataset
+    file, paired with 'system_path' or the single examples/*/system.toml.
+    """
+
+    from pathlib import Path
+
+    from .core.system import SystemSpec
+
+    if source is None:
+        source = _resolve_cfg(None, "dataset config")
+    if source.endswith(".json"):
+        from .core.config import RunConfiguration
+
+        config = RunConfiguration(source)
+
+        return config.system, config.datafile_dir
+    if system_path:
+        return SystemSpec.from_toml(system_path), source
+
+    found = sorted(Path().glob("examples/*/system.toml"))
+    if len(found) != 1:
+        raise typer.BadParameter(
+            f"Pass --system: found {len(found)} examples/*/system.toml files"
+        )
+
+    return SystemSpec.from_toml(found[0]), source
+
+
 @cli.command()
 def model(
     model_cfg_pth: str | None = typer.Argument(
@@ -141,6 +174,130 @@ def horizon(
         example_step=example_step or None,
         early_step=early_step,
     )
+
+
+@cli.command()
+def analyse(
+    source: str | None = typer.Argument(
+        None,
+        help="Dataset HDF5 to analyse, or a config that references one "
+        "(omit to pick a config).",
+    ),
+    system: str = typer.Option(
+        "",
+        help="SystemSpec toml (default: the single examples/*/system.toml). "
+        "Ignored when 'source' is a config.",
+    ),
+    out: str = typer.Option(
+        "", help="Output dir (defaults to data_analysis/<dataset>)."
+    ),
+    per_axis: bool = typer.Option(
+        True,
+        "--per-axis/--no-per-axis",
+        help="Also write full-size per-axis figures under per_axis/.",
+    ),
+) -> None:
+    """
+    Descriptive analysis of a dataset: envelope, statistics, per-channel
+    distributions and demand-to-position linearity.
+    """
+
+    import logging
+
+    from .data_analysis.analyse import run_analysis
+
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    spec, data_path = _resolve_dataset(source, system)
+    run_analysis(spec, data_path, out or None, per_axis=per_axis)
+
+
+@cli.command()
+def characterise(
+    source: str | None = typer.Argument(
+        None,
+        help="Dataset HDF5 to characterise, or a config that references one "
+        "(omit to pick a config).",
+    ),
+    system: str = typer.Option(
+        "",
+        help="SystemSpec toml (default: the single examples/*/system.toml). "
+        "Ignored when 'source' is a config.",
+    ),
+    out: str = typer.Option(
+        "",
+        help="Output dir (default: data_analysis/<dataset>/characterisation).",
+    ),
+) -> None:
+    """
+    Signal-characterisation battery: size, complexity (dimension, spectral,
+    entropy, dynamics) and physics/model-correctness axes.
+    """
+
+    import logging
+
+    from .data_analysis.characterise import run_characterisation
+
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    spec, data_path = _resolve_dataset(source, system)
+    run_characterisation(spec, data_path, out or None)
+
+
+@cli.command()
+def compare(
+    model_cfg_pth: str | None = typer.Argument(
+        None,
+        help="Plant config to compare against the data (omit to pick).",
+    ),
+    horizon: int = typer.Option(
+        20000, help="Window length (steps) driven through the plant."
+    ),
+    out: str = typer.Option(
+        "", help="Output dir (default: data_analysis/<model>/comparison)."
+    ),
+) -> None:
+    """
+    Compare the characterisation battery on data vs a plant (teacher-forced
+    one-step and free-run generation).
+    """
+
+    import logging
+
+    from .data_analysis.compare import run_comparison
+
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    model_cfg_pth = _resolve_cfg(model_cfg_pth, "plant config")
+    run_comparison(model_cfg_pth, out or None, horizon=horizon)
+
+
+@cli.command()
+def compare_controllers(
+    ssm_cfg: str = typer.Option(
+        "examples/deltabot/configs/controller_ssm_integral.json",
+        help="SSM controller config.",
+    ),
+    tcn_cfg: str = typer.Option(
+        "examples/deltabot/configs/controller_tcn_integral.json",
+        help="TCN controller config.",
+    ),
+    horizon: int = typer.Option(
+        20000, help="Closed-loop rollout length (steps)."
+    ),
+    out: str = typer.Option(
+        "", help="Output dir (default: data_analysis/controller_comparison)."
+    ),
+) -> None:
+    """
+    Compare the characterisation battery on the SSM vs TCN controllers,
+    closed-loop (controlled position and tracking error, both re-anchor
+    regimes), against the data.
+    """
+
+    import logging
+
+    from .data_analysis.compare import run_controller_comparison
+
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    run_controller_comparison(ssm_cfg, tcn_cfg, out or None, horizon=horizon)
 
 
 @cli.command()

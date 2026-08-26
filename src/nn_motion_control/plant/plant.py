@@ -22,7 +22,7 @@ from typing import Any
 import torch
 
 from nn_motion_control.core.checkpoints import load_checkpoint_bundle
-from nn_motion_control.core.config import RunConfiguration
+from nn_motion_control.core.config import RunConfiguration, counts_to_nm
 from nn_motion_control.data.loaders import AllDataInfo, build_rollout_splits
 from nn_motion_control.data.normalize import NormStats
 from nn_motion_control.models.builder import build_model
@@ -153,6 +153,7 @@ def rollout_splits_from_config(
         drop_last=drop_last,
         quiescent_seed=quiescent_seed,
         capture_seed=capture_seed,
+        capture_pos_scale=counts_to_nm(config),
     )
 
 
@@ -244,7 +245,7 @@ class Plant:
         return cur_p, cur_v
 
     def feature_stats(
-        self, features: Sequence[str]
+        self, features: Sequence[str], n_integral: int = 0
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Per-feature (mean, std), each [A, F], for controller input
@@ -253,13 +254,18 @@ class Plant:
         Reuses the plant's fitted stats: position and reference take the
         position mean/std, velocity takes the velocity mean/std, and error
         (a position difference) takes zero mean with the position std.
+
+        'n_integral' appends that many leaky-integrator taps,
+        so each takes the error's stats (zero mean, position std).
         """
 
         pos_m, pos_s = self._im[self._pos], self._istd[self._pos]
+
         if self._vel.numel():
             vel_m, vel_s = self._im[self._vel], self._istd[self._vel]
         else:
             vel_m, vel_s = torch.zeros_like(pos_m), torch.ones_like(pos_s)
+
         table = {
             "position": (pos_m, pos_s),
             "velocity": (vel_m, vel_s),
@@ -269,10 +275,17 @@ class Plant:
             "velocity_error": (torch.zeros_like(vel_m), vel_s),
         }
         unknown = [f for f in features if f not in table]
+
         if unknown:
             raise ValueError(f"Unknown controller features: {unknown}")
         means = torch.stack([table[f][0] for f in features], dim=1)  # [A, F]
         stds = torch.stack([table[f][1] for f in features], dim=1)  # [A, F]
+
+        if n_integral:
+            zero = torch.zeros_like(pos_m)[:, None].expand(-1, n_integral)
+            span = pos_s[:, None].expand(-1, n_integral)
+            means = torch.cat([means, zero], dim=1)
+            stds = torch.cat([stds, span], dim=1)
 
         return means, stds
 
@@ -466,6 +479,12 @@ class Plant:
             cur_v = window[:, vel, -1] * istd_vel + im_vel
         else:
             cur_v = torch.zeros_like(cur_p)
+
+        # Clear any per-rollout policy state (e.g. a leaky integrator) so
+        # each rollout starts from a fresh, on-manifold operating point.
+        reset = getattr(policy, "reset", None)
+        if callable(reset):
+            reset(b, window.device)
 
         positions, dacs = [], []
 

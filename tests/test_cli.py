@@ -35,7 +35,8 @@ def test_cli_champions_lists_registry():
     cmd = [sys.executable, "-m", "nn_motion_control", "champions"]
     out = subprocess.check_output(cmd).decode()
     assert "champions.json" in out
-    assert "plant: deltabot_plant_tcn_rollout" in out
+    assert "plant: deltabot_plant_ssm" in out
+    assert "plant_tcn: deltabot_plant_tcn_rollout" in out
     assert "controller: deltabot_controller_10k_general" in out
 
 

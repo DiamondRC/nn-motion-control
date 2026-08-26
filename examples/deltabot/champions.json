@@ -5,7 +5,7 @@
     "checkpoint": "runs/deltabot_plant_ssm/deltabot_plant_ssm.pth",
     "promoted": "2026-08-20",
     "metric": "scan free-run P50 |x err| 352 nm @128, ~6x better than the TCN in the slow-scan regime the controller operates in; one-step 0.9 nm. NB worse on fast ID excitation (P95 6.4% @128, fails the 5% gate the TCN passes) - promoted on the scan metric of record",
-    "note": "windowed larger delta SSM (d_model 128, d_state 64, 4 layers, val 2.7e-5). Best plant for the controller's slow-scan operating regime. Recurrent streaming refuted - see reports/decoupled_plant_hypothesis.md"
+    "note": "windowed larger delta SSM (d_model 128, d_state 64, 4 layers, val 2.7e-5). Best plant for the controller's slow-scan operating regime. Recurrent streaming refuted - see reports/decoupled_plant_hypothesis.md. UNITS: the 352 nm scan metric was computed on a units-mismatched Brett replay (raw counts fed into the nm-scale plant); units-corrected, both plants diverge open-loop on real scans and the '6x better' does not hold - metric under review, see reports/_UNITS_CORRECTION.md"
   },
   "plant_tcn": {
     "model": "deltabot_plant_tcn_rollout",
@@ -21,6 +21,6 @@
     "checkpoint": "runs/deltabot_controller_10k_general/deltabot_controller_10k_general.pth",
     "promoted": "2026-08-13",
     "metric": "x/y P50 ~0.8 nm, z P50 ~2.5 nm (RMS over horizon 96, reanchor 1)",
-    "note": "generalist: randomised trajectory distribution + horizon curriculum"
+    "note": "generalist: randomised trajectory distribution + horizon curriculum. UNITS: the P50 nm figures are sim, pre-units-fix (position is stored in nm, not counts) - multiply ~3.9x for corrected physical nm; see reports/_UNITS_CORRECTION.md"
   }
 }

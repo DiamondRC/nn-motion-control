@@ -16,7 +16,7 @@ import os
 import numpy as np
 import torch
 
-from nn_motion_control.core.config import RunConfiguration
+from nn_motion_control.core.config import RunConfiguration, position_to_nm
 from nn_motion_control.eval.metrics import (
     DEFAULT_GATE,
     ChannelMetrics,
@@ -350,20 +350,6 @@ def horizon_curves(errors: torch.Tensor) -> dict[str, np.ndarray]:
     }
 
 
-def position_resolution(config: RunConfiguration) -> np.ndarray:
-    """
-    Per-axis units-per-count of the predicted position channel
-    (1.0 if unknown).
-    """
-
-    channel = config.system.channel(config.target_channels[0])
-    axes = config.system.axes
-    if channel.resolution is None:
-        return np.ones(len(axes))
-
-    return np.array([channel.resolution[a] for a in axes])
-
-
 def run_horizon_eval(
     config_path: str,
     ckpt_path: str,
@@ -407,9 +393,7 @@ def run_horizon_eval(
     curves = horizon_curves(errors)
 
     axes = config.system.axes
-    to_nm = (
-        position_resolution(config) * 1e9
-    )  # units-per-count (m) -> nm; 1.0 if unknown
+    to_nm = position_to_nm(config)  # stored unit -> nm, per axis
     p99_nm = curves["p99"] * to_nm[None, :]  # [H, A]
 
     steps = _reference_steps(horizon)

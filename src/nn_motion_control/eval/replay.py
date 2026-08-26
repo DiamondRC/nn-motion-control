@@ -8,10 +8,10 @@ local fidelity out of distribution, the K-step free-run error is how fast
 it diverges. The capture is single-axis (one interferometer); the other
 axes are held quiescent, matching a single-axis move.
 
-Position and command in the capture are assumed to already be in the
-plant's channel units (encoder / command counts), so they map straight
-onto the model inputs; only the sample rate may differ (decimate to the
-plant rate).
+The capture's position is raw encoder counts; scale it to the plant's
+position unit (nm) with 'pos_scale' before it maps onto the model inputs.
+The command is already in the plant's command unit, so it maps straight
+through; only the sample rate may differ (decimate to the plant rate).
 """
 
 from __future__ import annotations
@@ -21,8 +21,8 @@ import torch
 
 from nn_motion_control.plant.plant import Plant
 
-# PandA capture channel names: interferometer position and applied
-# command (both in the plant's counts).
+# PandA capture channel names: interferometer position (raw encoder
+# counts) and applied command (already in the plant's command unit).
 CAPTURE_POSITION = "INENC1.VAL.Value"
 CAPTURE_COMMAND = "BRETT_PID.REAL_OUTPUT.Value"
 
@@ -32,13 +32,16 @@ def load_capture(
     decimate: int = 1,
     pos_key: str = CAPTURE_POSITION,
     dac_key: str = CAPTURE_COMMAND,
+    pos_scale: float = 1.0,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
     Load (position, command) from an HDF5 capture, decimated to the plant
     rate.
 
     Returns two float64 [N] arrays. 'decimate' keeps every d-th sample (a
-    20 kHz capture against a 10 kHz plant uses d=2).
+    20 kHz capture against a 10 kHz plant uses d=2). 'pos_scale' converts
+    the raw-count position to the plant's position unit (nm per count); the
+    command is left in its recorded unit.
     """
 
     import h5py
@@ -46,7 +49,7 @@ def load_capture(
     from nn_motion_control.data._hdf5 import as_dataset
 
     with h5py.File(path, "r") as f:
-        pos = as_dataset(f, pos_key)[::decimate].astype(np.float64)
+        pos = as_dataset(f, pos_key)[::decimate].astype(np.float64) * pos_scale
         dac = as_dataset(f, dac_key)[::decimate].astype(np.float64)
 
     return pos, dac
@@ -122,11 +125,11 @@ def replay_errors(
 ) -> torch.Tensor:
     """
     Free-run the plant on the captured command and return |position
-    error| per step, [B, H], in the position channel's physical units.
+    error| per step, [B, H], in the units of the passed 'pos' (nm when it
+    was loaded with the counts-to-nm 'pos_scale').
 
     Step 0 is the one-step (local) error; later steps are the compounding
-    free-run drift. Convert to nm at the call site with the channel
-    resolution, as the horizon eval does.
+    free-run drift.
     """
 
     warmup, dac_future, truth = build_replay_batch(

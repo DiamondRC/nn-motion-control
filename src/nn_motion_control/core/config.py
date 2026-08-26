@@ -5,6 +5,7 @@ from importlib import import_module
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -113,7 +114,8 @@ class RunConfiguration:
 
         # Scaffolding / run
         self.model_name: str = cfg["model_name"]
-        out_dir = self._resolve(run.get("out_dir", "runs"))
+        self.out_dir = self._resolve(run.get("out_dir", "runs"))
+        out_dir = self.out_dir
         # Each artifact owns a directory so its checkpoint, run history and
         # eval plots do not collide with other models under a shared out_dir.
         model_dir = f"{out_dir}/{self.model_name}"
@@ -221,3 +223,48 @@ class RunConfiguration:
 
         # Testing
         self.display_no = train.get("test_display_num", 3)
+
+
+# Factor from a stored channel unit to nanometres. The dataset stores
+# position in the channel's declared unit, so display and error reporting
+# scale by this to reach nm.
+_UNIT_TO_NM = {"nm": 1.0, "um": 1e3, "mm": 1e6, "m": 1e9}
+
+
+def unit_to_nm(unit: str | None) -> float:
+    """
+    Factor converting a stored length unit to nanometres (1.0 if unknown).
+    """
+
+    return _UNIT_TO_NM.get(unit or "", 1.0)
+
+
+def position_to_nm(config: RunConfiguration) -> np.ndarray:
+    """
+    Per-axis factor scaling stored position values to nanometres.
+
+    Driven by the position channel's declared unit; an unknown or absent
+    unit passes the stored magnitude through unchanged.
+    """
+
+    channel = config.system.channel(config.target_channels[0])
+    axes = config.system.axes
+
+    return np.full(len(axes), unit_to_nm(channel.unit))
+
+
+def counts_to_nm(config: RunConfiguration) -> np.ndarray:
+    """
+    Per-axis factor scaling raw encoder counts to nanometres.
+
+    From the position channel's sensor resolution (metres per count), for
+    raw-count capture sources; the already-scaled dataset does not use it.
+    1.0 if the resolution is unknown.
+    """
+
+    channel = config.system.channel(config.target_channels[0])
+    axes = config.system.axes
+    if channel.resolution is None:
+        return np.ones(len(axes))
+
+    return np.array([channel.resolution[a] for a in axes]) * 1e9

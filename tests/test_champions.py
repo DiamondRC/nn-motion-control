@@ -97,7 +97,7 @@ def test_controller_config_resolves_champion_plant():
     cfg = ControllerConfig(
         str(REPO / "examples/deltabot/configs/controller_10k_general.json")
     )
-    assert cfg.plant_config_path.endswith("configs/plant_tcn_rollout.json")
+    assert cfg.plant_config_path.endswith("configs/plant_ssm.json")
     assert cfg.plant_checkpoint.endswith(
-        "runs/deltabot_plant_tcn_rollout/deltabot_plant_tcn_rollout.pth"
+        "runs/deltabot_plant_ssm/deltabot_plant_ssm.pth"
     )

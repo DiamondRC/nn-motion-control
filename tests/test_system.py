@@ -43,9 +43,9 @@ def test_broadcast_field_fans_out_to_all_axes():
     pos = spec.channel("position")
     # A single 'limits' value must appear identically for every axis.
     assert pos.limits == {
-        "x": [-0.004, 0.004],
-        "y": [-0.004, 0.004],
-        "z": [-0.004, 0.004],
+        "x": [-4_000_000, 4_000_000],
+        "y": [-4_000_000, 4_000_000],
+        "z": [-4_000_000, 4_000_000],
     }
 
 

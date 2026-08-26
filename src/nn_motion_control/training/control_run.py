@@ -243,7 +243,9 @@ class ControlRun:
         loaders = self._build_loaders()
         # Normalise the controller's raw physical inputs with the
         # plant's fitted stats.
-        feat_mean, feat_std = plant.feature_stats(self.config.features)
+        feat_mean, feat_std = plant.feature_stats(
+            self.config.features, n_integral=len(self.config.integral_lambdas)
+        )
         net = build_controller_net(self.config, feat_mean, feat_std).to(
             self.device
         )

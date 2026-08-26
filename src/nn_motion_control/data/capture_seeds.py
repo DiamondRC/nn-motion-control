@@ -77,6 +77,7 @@ def append_capture_seeds(
     dac_cols: Sequence[int],
     decimate: int = 1,
     stride: int = DEFAULT_SEED_STRIDE,
+    pos_scale: float = 1.0,
 ) -> tuple[torch.Tensor, np.ndarray]:
     """
     Append normalised capture rows to the shared input tensor and return
@@ -85,8 +86,8 @@ def append_capture_seeds(
     The starts index the extended tensor, so they drop straight into the
     same rollout loader the dataset seeds use. Each capture contributes
     only starts whose window and horizon stay inside that capture, so no
-    rollout crosses a recording boundary. Position units are the dataset's
-    (the captures are recorded in the same encoder counts), so the rows are
+    rollout crosses a recording boundary. 'pos_scale' converts the raw-count
+    capture position to the dataset's position unit (nm), so the rows are
     normalised with the dataset's own fitted stats.
     """
 
@@ -103,7 +104,7 @@ def append_capture_seeds(
     offset = inputs.shape[0]
 
     for path in capture_paths:
-        pos, dac = load_capture(path, decimate=decimate)
+        pos, dac = load_capture(path, decimate=decimate, pos_scale=pos_scale)
         if len(pos) < span:
             logger.warning("Capture too short to seed, skipping: %s", path)
             continue

@@ -59,6 +59,40 @@ def test_diagssm_scan_equals_sequential_steps():
     assert torch.allclose(h_last, h, atol=1e-5)
 
 
+def test_diagssm_mag_floor_confines_poles_and_stays_equivalent():
+    torch.manual_seed(5)
+    floor = 0.9995
+    layer = DiagSSM(d_in=4, d_out=6, d_state=16, mag_floor=floor).eval()
+    mag = layer._mag()
+    # Every pole sits in the near-marginal band [floor, 1), so the state
+    # integrates instead of contracting to zero over a long free-run.
+    assert (mag >= floor).all() and (mag < 1.0).all()
+    # The dual-form equivalence still holds with a floor set.
+    u = torch.randn(2, 25, 4)
+    y_par, h_last = layer.scan(u)
+    h = layer.init_state(2, u.device)
+    ys = []
+
+    for t in range(u.shape[1]):
+        y_t, h = layer.step(u[:, t], h)
+        ys.append(y_t)
+    assert torch.allclose(y_par, torch.stack(ys, dim=1), atol=1e-4)
+    assert torch.allclose(h_last, h, atol=1e-4)
+
+
+def test_diagssm_default_floor_matches_plain_squash():
+    # With no floor the magnitude is the plain squash exp(-exp(log_decay)).
+    torch.manual_seed(6)
+    layer = DiagSSM(d_in=3, d_out=3, d_state=12)
+    plain = torch.exp(-torch.exp(layer.log_decay))
+    assert torch.allclose(layer._mag(), plain, atol=1e-7)
+
+
+def test_diagssm_rejects_out_of_range_floor():
+    with pytest.raises(ValueError, match="magnitude floor"):
+        DiagSSM(d_in=3, d_out=3, d_state=4, mag_floor=1.0)
+
+
 def test_ssm_model_builds_and_forwards(ssm_cfg):
     m = JsonModel(config=RunConfiguration(ssm_cfg))
     assert m.is_ssm

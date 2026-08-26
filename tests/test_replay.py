@@ -81,3 +81,22 @@ def test_capture_too_short_raises(plant):
         build_replay_batch(
             plant, pos, dac, axis=0, window=WINDOW, horizon=6, stride=10
         )
+
+
+def test_load_capture_scales_position_not_command(tmp_path):
+    import h5py
+
+    from nn_motion_control.eval.replay import (
+        CAPTURE_COMMAND,
+        CAPTURE_POSITION,
+        load_capture,
+    )
+
+    path = tmp_path / "cap.h5"
+    with h5py.File(path, "w") as f:
+        f[CAPTURE_POSITION] = np.arange(10, dtype=np.float64)
+        f[CAPTURE_COMMAND] = np.arange(10, dtype=np.float64)
+    pos, dac = load_capture(str(path), pos_scale=0.256)
+    # Position is scaled counts -> nm; the command is left untouched.
+    assert np.allclose(pos, np.arange(10) * 0.256)
+    assert np.allclose(dac, np.arange(10))

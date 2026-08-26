@@ -12,6 +12,7 @@ the plant's channel-expansion path.
 from __future__ import annotations
 
 import json
+import math
 import os
 from pathlib import Path
 
@@ -131,7 +132,18 @@ class ControllerConfig:
             )
         self.servo_rate_hz = float(ctrl["servo_rate_hz"])
 
-        self.in_features = len(self.axes) * len(self.features)
+        # Optional leaky-integrator error memory: an EMA of the per-axis
+        # tracking error at each time constant (seconds), converted to a
+        # decay factor lambda = exp(-1 / (tau * servo_rate)). Gives the
+        # otherwise memoryless MLP the low-frequency state a memoryless law
+        # cannot form, so it can reject a slowly accumulating bias.
+        taus = ctrl.get("integral_taus", [])
+        self.integral_lambdas = [
+            math.exp(-1.0 / (float(t) * self.servo_rate_hz)) for t in taus
+        ]
+        self.in_features = len(self.axes) * (
+            len(self.features) + len(self.integral_lambdas)
+        )
         self.out_features = len(self.axes)
         self._dac_name = _command_channel(self.system)
         self.safe_range = _safe_range_tensor(self.system, self._dac_name)
@@ -187,7 +199,11 @@ def build_policy(config: ControllerConfig, net: ControllerNet) -> NNPolicy:
     """
 
     return NNPolicy(
-        net, FeatureSpec(config.features), config.safe_range, len(config.axes)
+        net,
+        FeatureSpec(config.features),
+        config.safe_range,
+        len(config.axes),
+        integral_lambdas=config.integral_lambdas,
     )
 
 
@@ -215,6 +231,7 @@ def save_controller_checkpoint(
             for q in config.quant
         ],
         "input_act_bits": net.input_act_bits,
+        "integral_lambdas": list(config.integral_lambdas),
         "safe_range": config.safe_range.cpu(),
         "plant_config": config.plant_config_path,
         "plant_checkpoint": config.plant_checkpoint,
@@ -266,12 +283,20 @@ class Controller:
         axes = bundle["axes"]
         features = tuple(bundle["features"])
         quant = [QuantSpec(**q) for q in bundle["quant"]]
-        net = ControllerNet(
-            len(axes) * len(features), len(axes), bundle["hidden"], quant
-        ).to(device)
+        lambdas = bundle.get("integral_lambdas", [])
+        in_features = len(axes) * (len(features) + len(lambdas))
+        net = ControllerNet(in_features, len(axes), bundle["hidden"], quant).to(
+            device
+        )
         net.load_state_dict(bundle["model_state_dict"])
         net.eval()
         safe_range = bundle["safe_range"].to(device)
-        policy = NNPolicy(net, FeatureSpec(features), safe_range, len(axes))
+        policy = NNPolicy(
+            net,
+            FeatureSpec(features),
+            safe_range,
+            len(axes),
+            integral_lambdas=lambdas,
+        )
 
         return cls(net, policy)

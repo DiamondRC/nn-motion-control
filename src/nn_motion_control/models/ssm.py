@@ -17,8 +17,12 @@ y_t = Re(C h_t) + D u_t. Two equivalent evaluations:
 The two forms are numerically equivalent (to float rounding), tests in
 tests/test_ssm.py gate that. The state is complex so a pole pair can
 model a decaying oscillation; parameters are stored as real tensors and
-the pole is built as lambda = exp(-exp(log_decay) + i*theta) so
-|lambda| < 1 (stable) by design.
+the magnitude is built as |lambda| = mag_floor + (1 - mag_floor) *
+exp(-exp(log_decay)), so |lambda| < 1 (stable) by design. With the
+default mag_floor of 0 the poles span the full stable disc; a floor near
+1 confines them to a near-marginal band [mag_floor, 1), giving
+long-memory modes that integrate their input rather than contracting the
+state to zero over a long free-run.
 """
 
 from __future__ import annotations
@@ -34,6 +38,34 @@ LOG_DECAY_INIT_MIN = -7.0
 LOG_DECAY_INIT_MAX = -4.0
 # Initial angular frequency upper bound, ~pi/10 rad/step.
 THETA_INIT_MAX = 0.31416
+# When a magnitude floor is set, initial |lambda| is drawn uniformly
+# across this fraction of the band [mag_floor, 1) so the layer starts
+# with a spread of near-marginal timescales, not all pinned at the
+# ceiling.
+MAG_INIT_LO_FRAC = 0.1
+MAG_INIT_HI_FRAC = 0.9
+
+
+def _init_log_decay(d_state: int, mag_floor: float) -> torch.Tensor:
+    """Initial log_decay for a state of size d_state.
+
+    With no floor, a spread across the full stable disc; with a floor,
+    magnitudes drawn uniformly across the band [mag_floor, 1) and the
+    squash |lambda| = mag_floor + (1 - mag_floor) * exp(-exp(log_decay))
+    inverted to recover the stored parameter.
+    """
+
+    if mag_floor == 0.0:
+        return torch.empty(d_state).uniform_(
+            LOG_DECAY_INIT_MIN, LOG_DECAY_INIT_MAX
+        )
+    span = 1.0 - mag_floor
+    lo = mag_floor + span * MAG_INIT_LO_FRAC
+    hi = mag_floor + span * MAG_INIT_HI_FRAC
+    mag0 = torch.empty(d_state).uniform_(lo, hi)
+    s0 = (mag0 - mag_floor) / span
+
+    return torch.log(-torch.log(s0))
 
 
 class DiagSSM(nn.Module):
@@ -46,17 +78,19 @@ class DiagSSM(nn.Module):
     same per-timestep values.
     """
 
-    def __init__(self, d_in: int, d_out: int, d_state: int):
+    def __init__(
+        self, d_in: int, d_out: int, d_state: int, mag_floor: float = 0.0
+    ):
         super().__init__()
+        if not 0.0 <= mag_floor < 1.0:
+            raise ValueError("Pole magnitude floor must be in [0, 1).")
         self.d_in, self.d_out, self.d_state = d_in, d_out, d_state
+        self.mag_floor = float(mag_floor)
         self.residual = d_in == d_out
-        # Stable complex pole lambda = exp(-exp(log_decay) + i*theta); a
-        # spread of timescales, see LOG_DECAY_INIT_MIN/MAX above.
-        self.log_decay = nn.Parameter(
-            torch.empty(d_state).uniform_(
-                LOG_DECAY_INIT_MIN, LOG_DECAY_INIT_MAX
-            )
-        )
+        # Stable complex pole lambda = |lambda| * exp(i*theta) with
+        # |lambda| squashed into [mag_floor, 1); see _mag and the band
+        # constants above.
+        self.log_decay = nn.Parameter(_init_log_decay(d_state, self.mag_floor))
         self.theta = nn.Parameter(
             torch.empty(d_state).uniform_(0.0, THETA_INIT_MAX)
         )
@@ -70,10 +104,15 @@ class DiagSSM(nn.Module):
         self.c_im = nn.Parameter(torch.randn(d_out, d_state) * scale_c)
         self.d_skip = nn.Parameter(torch.randn(d_out, d_in) * (d_in**-0.5))
 
-    def _lambda(self) -> torch.Tensor:
-        mag = torch.exp(-torch.exp(self.log_decay))
+    def _mag(self) -> torch.Tensor:
+        # Squashed pole magnitude in (0, 1), lifted into [mag_floor, 1);
+        # with mag_floor 0 this is the plain squash exp(-exp(log_decay)).
+        s = torch.exp(-torch.exp(self.log_decay))
 
-        return torch.polar(mag, self.theta)  # complex [d_state]
+        return self.mag_floor + (1.0 - self.mag_floor) * s
+
+    def _lambda(self) -> torch.Tensor:
+        return torch.polar(self._mag(), self.theta)  # complex [d_state]
 
     def _gamma(self) -> torch.Tensor:
         # Input normalisation gamma = sqrt(1 - |lambda|^2) (LRU trick):
@@ -82,18 +121,16 @@ class DiagSSM(nn.Module):
         # makes the state variance blow up (loss explodes at init). This
         # keeps the state variance ~unit regardless of the pole's memory
         # length.
-        mag_sq = torch.exp(
-            -2.0 * torch.exp(self.log_decay)
-        )  # |lambda|^2  [d_state]
+        mag = self._mag()
 
-        return torch.sqrt(1.0 - mag_sq)
+        return torch.sqrt(1.0 - mag * mag)
 
     def _kernel(self, t_len: int, device: torch.device) -> torch.Tensor:
         # SSM kernel powers[n, j] = lambda_n^j for j = 0..t_len-1, built
         # from the polar form (no complex **) so it is stable and cheap:
         # |lambda|^j decays.
         j = torch.arange(t_len, device=device, dtype=self.log_decay.dtype)
-        log_mag = -torch.exp(self.log_decay)  # log|lambda|  [d_state]
+        log_mag = torch.log(self._mag())  # log|lambda|  [d_state]
         mag_j = torch.exp(
             log_mag.unsqueeze(1) * j.unsqueeze(0)
         )  # [d_state, t_len]

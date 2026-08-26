@@ -297,11 +297,14 @@ class NNPolicy:
         features: FeatureSpec,
         safe_range: torch.Tensor,
         n_axes: int,
+        integral_lambdas: Sequence[float] | None = None,
     ):
-        expected = n_axes * features.count
+        taps = len(integral_lambdas) if integral_lambdas else 0
+        expected = n_axes * (features.count + taps)
         if net.dims[0] != expected:
             raise ValueError(
-                f"Controller input {net.dims[0]} != axes*features {expected}"
+                f"Controller input {net.dims[0]} != axes*(features+integral) "
+                f"{expected}"
             )
         if safe_range.shape != (n_axes, 2):
             raise ValueError(
@@ -315,6 +318,39 @@ class NNPolicy:
         self._centre = (self._lo + self._hi) / 2
         self._half = (self._hi - self._lo) / 2
 
+        # Leaky-integrator error memory:
+        # per-axis EMA of the tracking error at each decay lambda,
+        # giving the memoryless MLP low-frequency state.
+        self._lambda = (
+            torch.tensor([float(x) for x in integral_lambdas])
+            if integral_lambdas
+            else None
+        )
+        self._s: torch.Tensor | None = None
+
+    def reset(self, batch: int, device: torch.device | str) -> None:
+        """Clear the integrator state at the start of a rollout."""
+
+        if self._lambda is not None:
+            self._s = torch.zeros(
+                batch, self.n_axes, self._lambda.numel(), device=device
+            )
+
+    def _augment(self, x: torch.Tensor, error: torch.Tensor) -> torch.Tensor:
+        """Advance the integrator and append its taps to the features."""
+
+        lam = cast(torch.Tensor, self._lambda).to(error.device, error.dtype)
+
+        if self._s is None:
+            self.reset(error.shape[0], error.device)
+
+        s = cast(torch.Tensor, self._s).to(error.dtype)  # [B, A, n_tau]
+        s = lam * s + (1.0 - lam) * error[..., None]  # unit-DC-gain EMA
+        self._s = s
+        base = x.reshape(x.shape[0], self.n_axes, -1)  # [B, A, F]
+
+        return torch.cat([base, s], dim=-1).reshape(x.shape[0], -1)
+
     def __call__(
         self,
         position: torch.Tensor,
@@ -325,6 +361,9 @@ class NNPolicy:
         x = self.features.assemble(
             position, velocity, reference, reference_velocity
         )
+        if self._lambda is not None:
+            x = self._augment(x, reference - position)
+
         raw = self.net(x)
         centre = self._centre.to(raw.device, raw.dtype)
         half = self._half.to(raw.device, raw.dtype)

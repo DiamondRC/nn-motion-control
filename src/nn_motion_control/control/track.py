@@ -24,9 +24,8 @@ from nn_motion_control.control.closed_loop import (
     zero_policy,
 )
 from nn_motion_control.control.config import Controller, ControllerConfig
-from nn_motion_control.core.config import RunConfiguration
+from nn_motion_control.core.config import RunConfiguration, position_to_nm
 from nn_motion_control.core.progress import spinner
-from nn_motion_control.eval.horizon import position_resolution
 from nn_motion_control.eval.tables import (
     PERCENTILE_LABELS,
     PERCENTILES,
@@ -244,7 +243,7 @@ def run_track(
     layout = RolloutLayout.from_config(plant_cfg)
     train = config.training
     horizon = int(train.get("horizon", 32))
-    to_nm = position_resolution(plant_cfg) * 1e9  # counts -> nm, per axis
+    to_nm = position_to_nm(plant_cfg)  # stored unit -> nm, per axis
     axes = config.axes
 
     logger.info("Loading dataset and sampling %d quiescent seeds ...", samples)
