@@ -145,6 +145,7 @@ class RunConfiguration:
 
         # Data
         self.datafile_dir = self._resolve(cfg["data"])
+        check_dataset_matches(self.system, self.datafile_dir)
         self.train_ratio = train.get("train_ratio", 0.8)
         self.val_ratio = train.get("validation_ratio", 0.1)
 
@@ -165,6 +166,10 @@ class RunConfiguration:
         self.window_size = arch.get("window_size", 1)
         if self.window_size < 1:
             raise ValueError(f"{self.window_size=} must be >= 1")
+        # A learned linear path over the whole input window, added to the
+        # stack's output (see JsonModel).
+        self.linear_skip = bool(arch.get("linear_skip", False))
+        self.freeze_linear_skip = bool(arch.get("freeze_linear_skip", False))
         # Channel names (roles) kept alongside the expanded labels: the
         # rollout uses them to derive which columns are state/command from
         # the SystemSpec.
@@ -215,6 +220,18 @@ class RunConfiguration:
         self.lr_rate = train["learning_rate"]
         self.accum_steps = train.get("accumulation_steps", 1)
         self.dtype = getattr(torch, train.get("training_dtype", "float32"))
+        # Optional oversampling of the small-signal regime ({"band": [lo,
+        # hi] command std, "factor", "span" samples}), see
+        # 'oversample_small_signal'.
+        self.small_signal = train.get("small_signal")
+        # Optional linearity augmentation of rollout training ({"fraction",
+        # "scale": [lo, hi]}), see 'LinearityAugment'.
+        self.linearity_augment = train.get("linearity_augment")
+        # One-step training: subsample the overlapping window starts.
+        self.train_start_stride = int(train.get("start_stride", 1))
+        # A float32 run is strict unless TF32's 10-bit mantissa is enough
+        # for what the run must resolve.
+        self.allow_tf32 = bool(train.get("allow_tf32", False))
         self.loss_function = resolve_class(
             train["loss_function"], module_paths=(_LOSS_MODULE, "torch.nn")
         )
@@ -229,6 +246,50 @@ class RunConfiguration:
 # position in the channel's declared unit, so display and error reporting
 # scale by this to reach nm.
 _UNIT_TO_NM = {"nm": 1.0, "um": 1e3, "mm": 1e6, "m": 1e9}
+
+
+def check_dataset_matches(system: SystemSpec, data_path: str) -> None:
+    """
+    Raise when a dataset's recorded rate or units contradict the system.
+
+    Only datasets that record them (schema v3) are checked, and only
+    against fields the system sets, so older datasets and test fixtures
+    pass through.
+    """
+
+    import h5py
+
+    if not Path(data_path).exists():
+        return
+    with h5py.File(data_path, "r") as f:
+        attrs: dict[str, Any] = dict(f.attrs)
+
+    def unit_of(kind: str) -> str | None:
+        units = [ch.unit for ch in system.channels.values() if ch.kind == kind]
+
+        return units[0] if units else None
+
+    checks = [
+        ("rate_hz", system.data_rate_hz, "the system's data_rate_hz"),
+        ("position_unit", unit_of("measured"), "the measured channel's unit"),
+        ("command_unit", unit_of("command"), "the command channel's unit"),
+    ]
+
+    for key, expected, what in checks:
+        if key not in attrs or expected is None:
+            continue
+        got = attrs[key]
+        got = got.item() if isinstance(got, np.generic) else got
+        same = (
+            np.isclose(float(got), float(expected))
+            if isinstance(expected, int | float)
+            else str(got) == str(expected)
+        )
+        if not same:
+            raise ValueError(
+                f"Dataset {data_path} has {key} {got!r} but {what} is "
+                f"{expected!r}, pair it with the matching SystemSpec"
+            )
 
 
 def unit_to_nm(unit: str | None) -> float:
@@ -251,20 +312,3 @@ def position_to_nm(config: RunConfiguration) -> np.ndarray:
     axes = config.system.axes
 
     return np.full(len(axes), unit_to_nm(channel.unit))
-
-
-def counts_to_nm(config: RunConfiguration) -> np.ndarray:
-    """
-    Per-axis factor scaling raw encoder counts to nanometres.
-
-    From the position channel's sensor resolution (metres per count), for
-    raw-count capture sources; the already-scaled dataset does not use it.
-    1.0 if the resolution is unknown.
-    """
-
-    channel = config.system.channel(config.target_channels[0])
-    axes = config.system.axes
-    if channel.resolution is None:
-        return np.ones(len(axes))
-
-    return np.array([channel.resolution[a] for a in axes]) * 1e9

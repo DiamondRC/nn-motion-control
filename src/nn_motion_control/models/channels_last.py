@@ -58,15 +58,16 @@ def is_channels_last_able(network: nn.Sequential) -> bool:
 
 
 def _causal_conv2d(conv: nn.Conv1d, x: torch.Tensor) -> torch.Tensor:
-    # Run a causal Conv1d as a conv2d over [B, Cin, 1, L], reproducing
-    # its left-pad + Chomp1d causal trim. conv.weight materialises the
-    # weight-norm parametrisation.
+    # Run a causal Conv1d as a conv2d over [B, Cin, 1, L]. The Conv1d pads
+    # both ends and Chomp1d trims the right, here only the left is padded,
+    # so the trimmed outputs (a third at the widest dilation) are never
+    # computed. conv.weight materialises the weight-norm
+    # parametrisation.
     p = cast(tuple, conv.padding)[0]
     d = cast(tuple, conv.dilation)[0]
     w = conv.weight.unsqueeze(2)
-    out = F.conv2d(x, w, conv.bias, padding=(0, p), dilation=(1, d))
 
-    return out[:, :, :, : out.shape[-1] - p] if p > 0 else out
+    return F.conv2d(F.pad(x, (p, 0)), w, conv.bias, dilation=(1, d))
 
 
 def _block(blk: TemporalBlock, x: torch.Tensor) -> torch.Tensor:

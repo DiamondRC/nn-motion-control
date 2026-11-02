@@ -43,11 +43,11 @@ def _champion_roles() -> dict[str, str]:
     under examples/.
     """
 
-    from nn_motion_control.core.champions import load_champions
+    from nn_motion_control.core.champions import REGISTRY_GLOB, load_champions
 
     tags: dict[str, str] = {}
 
-    for registry in sorted(Path().glob("examples/*/champions.json")):
+    for registry in sorted(Path().glob(f"examples/*/{REGISTRY_GLOB}")):
         for role, champion in load_champions(registry).items():
             tags[str((registry.parent / champion.config).resolve())] = role
 

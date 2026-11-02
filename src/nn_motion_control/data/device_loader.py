@@ -168,10 +168,53 @@ class RolloutWindowLoader(_WindowLoaderBase):
         self.pos_cols = torch.as_tensor(pos_cols, device=device)
         self.dac_cols = torch.as_tensor(dac_cols, device=device)
         self._win_off = torch.arange(self.window_size, device=device)
+        # Every start, kept so 'restrict' can narrow and restore the set.
+        self._all_starts = self._starts
         self._hor_off = torch.arange(self.horizon, device=device)
         # Drop the ragged final batch so batches share a shape and a compiled
         # rollout step never recompiles on a short last batch.
         self.drop_last = drop_last
+
+    def last_frames(self) -> torch.Tensor:
+        """
+        Input row [N, F] at the last warmup frame of every start.
+        """
+
+        return self._inputs[self._all_starts + self.window_size - 1]
+
+    def restrict(self, keep: torch.Tensor | None) -> None:
+        """
+        Iterate only the starts where 'keep' [N] (over every start) is
+        True, None restores them all.
+        """
+
+        if keep is None:
+            self._starts = self._all_starts
+        else:
+            if not bool(keep.any()):
+                raise ValueError("Restrict would leave no starts")
+            self._starts = self._all_starts[keep]
+        self.dataset = self._starts
+
+    def spread_warmups(self, n: int) -> torch.Tensor:
+        """
+        Warmup windows [n, F, W] from n starts spread evenly across all of
+        this loader's starts, for evaluations that need distinct states
+        rather than one batch of near-identical neighbours.
+        """
+
+        pick = (
+            torch.linspace(
+                0, len(self._starts) - 1, n, device=self._starts.device
+            )
+            .round()
+            .long()
+        )
+        s = self._starts[pick]
+
+        return self._inputs[s[:, None] + self._win_off[None, :]].permute(
+            0, 2, 1
+        )
 
     def __iter__(
         self,

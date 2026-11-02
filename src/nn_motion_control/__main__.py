@@ -3,11 +3,13 @@ Command-line interface for 'python -m nn_motion_control'.
 """
 
 from datetime import datetime
+from typing import Annotated
 
 import typer
 from typer.core import TyperGroup
 
 from . import __version__
+from .core.precision import strict_float32
 from .training.run import CompleteRun
 
 __all__ = ["main"]
@@ -300,6 +302,172 @@ def compare_controllers(
     run_controller_comparison(ssm_cfg, tcn_cfg, out or None, horizon=horizon)
 
 
+@cli.command("bench-controllers")
+def bench_controllers(
+    configs: Annotated[
+        list[str], typer.Argument(help="Controller configs to benchmark.")
+    ],
+    bias: float = typer.Option(
+        10.0, help="DAC bias for the step-rejection test (DAC units)."
+    ),
+    out: str = typer.Option(
+        "", help="Output dir (default: data_analysis/controller_bench)."
+    ),
+) -> None:
+    """
+    Benchmark trained controllers head-to-head: long hold, tracking, step
+    response, DAC-bias rejection and FPGA cost, from shared seeds and
+    references.
+    """
+
+    import logging
+
+    from .control.bench import run_controller_bench
+
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    run_controller_bench(configs, out or None, bias=bias)
+
+
+@cli.command("plant-frf")
+def plant_frf(
+    model_cfg_pth: str | None = typer.Argument(
+        None,
+        help="Path to the plant run-config JSON (omit to pick).",
+    ),
+    checkpoint: str = typer.Option(
+        "", help="Plant checkpoint (defaults to the config's save path)."
+    ),
+) -> None:
+    """
+    Frequency-response check: free-run a trained plant on the held-out
+    multisine records and compare its response to the recorded one per
+    band.
+    """
+
+    import logging
+
+    from .eval.frf import format_report, run_plant_frf
+
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    model_cfg_pth = _resolve_cfg(model_cfg_pth, "plant/model config")
+    report = run_plant_frf(model_cfg_pth, checkpoint or None)
+    typer.echo(format_report(report))
+
+
+@cli.command("build-dataset")
+def build_dataset(
+    spec: str = typer.Argument(
+        help="Build spec JSON (e.g. examples/deltabot/datasets/panda_20k.json)."
+    ),
+    overwrite: bool = typer.Option(
+        True, "--overwrite/--no-overwrite", help="Replace an existing output."
+    ),
+) -> None:
+    """
+    Build a schema-v3 training dataset from open-loop PandA captures.
+    """
+
+    import json
+    import logging
+
+    from .data.capture_ingest import build_capture_dataset
+
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    summary = build_capture_dataset(spec, overwrite=overwrite)
+    typer.echo(json.dumps(summary, indent=2))
+
+
+@cli.command("preflight")
+def preflight(
+    config: Annotated[str, typer.Argument(help="Controller config to check.")],
+) -> None:
+    """
+    Build a controller run and run its preflight checks without training.
+    """
+
+    from .training.control_run import ControlRun
+
+    ControlRun(config, run_training=False)
+
+
+@cli.command("plant-small-signal")
+def plant_small_signal(
+    config: Annotated[str, typer.Argument(help="Plant config to test.")],
+    out: str = typer.Option("", help="Output dir (default: the plant's eval)."),
+) -> None:
+    """
+    Gate a plant on its small-signal response: gain against the measured
+    FRF under count-level command noise.
+    """
+
+    import logging
+
+    from .eval.small_signal import run_small_signal
+
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    run_small_signal(config, out or None)
+
+
+@cli.command("evaluate-controllers")
+def evaluate_controllers(
+    controllers: Annotated[
+        list[str],
+        typer.Argument(
+            help="Controller configs (.json) or checkpoints (.pth)."
+        ),
+    ],
+    suite_config: str = typer.Option(
+        "examples/deltabot/configs/controller_panda_10k_tcn_workspace.json",
+        help="Controller config whose system, plant and seeds set the suite.",
+    ),
+    pid_capture: str = typer.Option(
+        "data/runs/campaign/20261016-142922/closed_loop/drive_x/"
+        "20261016-151422",
+        help="PandA PID capture run: its gains and trajectory set the PID.",
+    ),
+    out: str = typer.Option(
+        "", help="Output dir (default: data_analysis/controller_suite)."
+    ),
+) -> None:
+    """
+    Score controllers and the PandA PID baseline on the fixed suite: holds
+    near and far, every reference family, endurance and the hardware
+    trajectory, with tracking error, divergence and command thrash.
+    """
+
+    import logging
+
+    from .eval.controller_suite import run_suite
+
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    run_suite(controllers, suite_config, pid_capture, out or None)
+
+
+@cli.command("endurance-controllers")
+def endurance_controllers(
+    configs: Annotated[
+        list[str], typer.Argument(help="Controller configs to test.")
+    ],
+    bias: float = typer.Option(
+        10.0, help="DAC bias for the biased hold (DAC units)."
+    ),
+    out: str = typer.Option(
+        "", help="Output dir (default: data_analysis/controller_endurance)."
+    ),
+) -> None:
+    """
+    Hold each controller for 30 s on a biased hold, a step and bounded
+    trajectories, reporting error at 0.5, 1, 5, 10 and 30 s.
+    """
+
+    import logging
+
+    from .control.bench import run_controller_endurance
+
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    run_controller_endurance(configs, out or None, bias=bias)
+
+
 @cli.command()
 def reliability(
     model_cfg_pth: str | None = typer.Argument(
@@ -549,12 +717,12 @@ def champions(
 
     from pathlib import Path
 
-    from .core.champions import load_champions, registry_path
+    from .core.champions import REGISTRY_GLOB, load_champions, registry_path
 
     if system:
         registries = [registry_path(system)]
     else:
-        registries = sorted(Path().glob("examples/*/champions.json"))
+        registries = sorted(Path().glob(f"examples/*/{REGISTRY_GLOB}"))
     if not registries:
         typer.echo("No champion registries found under examples/*/.")
 
@@ -593,6 +761,10 @@ def main(
     """
     Neural-network motion-controller builder.
     """
+
+    # Every command starts at full float32 precision whatever the
+    # environment enables, a training config may opt in to TF32.
+    strict_float32()
 
 
 if __name__ == "__main__":

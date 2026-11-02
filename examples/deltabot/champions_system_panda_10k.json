@@ -1,0 +1,10 @@
+{
+  "plant": {
+    "model": "deltabot_panda_10k_plant_tcn_linskip_fp32",
+    "config": "configs/plant_panda_10k_tcn_linskip_fp32.json",
+    "checkpoint": "runs/frozen/deltabot_panda_10k_plant_linskip_fp32_e2.pth",
+    "promoted": "2026-10-30",
+    "metric": "all strict float32: small-signal 5-15 Hz at 1 count 0.92/0.95/0.95 (gate PASS; was 0.26/0.37/0.43); open-loop noise 168/54/77 nm vs measured 189/55/60 (was 78/40/21); free-run P95 @512 3.20/0.97/1.76 % (was 1.53/0.56/0.59), val loss 1.93e-5 (was 9.1e-6); FRF driven 0.99-1.00 to 1.2 kHz; cross-axis 5-30 Hz 0.60 (was 0.84-0.92)",
+    "note": "Linear branch (least squares on all training windows, frozen) in parallel with the TCN; TCN trained free-run at 1024 steps from a zeroed head in strict float32 (TF32 breaks the linear branch); epoch 2 of a run stopped at epoch 4, the last epoch inside the small-signal gate (later epochs trade resonance for drift). Known gaps: drift 2-3x the previous champion at 512 steps, weak low-frequency coupling, x softening with further training."
+  }
+}

@@ -128,3 +128,56 @@ def config_factory(tmp_path, synth_h5):
         return str(path)
 
     return _make
+
+
+# Synthetic PandA captures: 40 kHz capture of a 20 kHz command table.
+PANDA_CAPTURE_HZ = 40_000.0
+
+
+def _write_capture(
+    path,
+    pgens,
+    counts=None,
+    n=4000,
+    phase=1,
+    scale=None,
+    feedback=False,
+    gap_at=None,
+):
+    """
+    Write a synthetic capture: 'pgens' maps a PGEN block to its drive-rate
+    table, held for two capture samples starting at 'phase'.
+    """
+    ts = np.r_[99.0, 0.0, (np.arange(n - 2) + 0.5) / PANDA_CAPTURE_HZ]
+    if gap_at is not None:
+        ts[gap_at:] += 5 / PANDA_CAPTURE_HZ
+    if counts is None:
+        # A one-count dither: a live interferometer never holds still.
+        counts = np.tile(np.arange(n) % 2, (3, 1)).astype(float)
+    with h5py.File(path, "w") as f:
+        f.create_dataset("PCAP.TS_START.Value", data=ts)
+
+        for i in range(3):
+            values = counts[i] * (scale or 1.0)
+            f.create_dataset(f"INENC{i + 1}.VAL.Value", data=values)
+
+        for block, table in pgens.items():
+            held = np.repeat(table, 2)
+            out = np.zeros(n)
+            out[phase:] = held[: n - phase]
+            f.create_dataset(f"{block}.OUT.Value", data=out)
+        f.create_dataset(
+            "PID.REAL_OUTPUT.Value", data=np.full(n, 5.0 if feedback else 0.0)
+        )
+        if scale is not None:
+            f.attrs["janus_capture_scales"] = json.dumps(
+                {f"INENC{i + 1}.VAL": scale for i in range(3)}
+            )
+
+    return path
+
+
+@pytest.fixture
+def write_capture():
+    """The synthetic PandA capture writer (see '_write_capture')."""
+    return _write_capture

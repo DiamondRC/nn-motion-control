@@ -1,3 +1,4 @@
+import dataclasses
 import logging
 import os
 import shutil
@@ -6,6 +7,8 @@ from collections.abc import Sized
 from datetime import datetime
 from typing import cast
 
+import h5py
+import numpy as np
 import torch
 
 from nn_motion_control.core.checkpoints import (
@@ -13,8 +16,11 @@ from nn_motion_control.core.checkpoints import (
     state_dict_from,
 )
 from nn_motion_control.core.config import RunConfiguration
+from nn_motion_control.core.precision import allow_tf32, strict_float32
 from nn_motion_control.core.seeding import seed_everything
 from nn_motion_control.data import build_time_series_splits
+from nn_motion_control.data.augment import LinearityAugment
+from nn_motion_control.data.device_loader import RolloutWindowLoader
 from nn_motion_control.eval.evaluate import Evaluator
 from nn_motion_control.models.builder import build_model
 from nn_motion_control.models.channels_last import is_channels_last_able
@@ -73,6 +79,11 @@ class CompleteRun:
         self.logger.info(f"Global RNG seeded with {self.m.seed}")
 
     def _cuda_profiling(self):
+        if self.m.allow_tf32 and self.m.linear_skip:
+            # The linear path's large, mutually cancelling weights turn
+            # TF32's input rounding into errors the stack then learns to
+            # correct, which it gets wrong at full precision.
+            raise ValueError("Linear_skip needs allow_tf32 off")
         if self.m.do_verb_log:
             self.logger.debug(f"Torch version: {torch.__version__}")
 
@@ -84,13 +95,17 @@ class CompleteRun:
                 )
             self.device = "cuda"
 
-            # Fixed input shapes -> let cuDNN autotune
-            # allow TF32 on matmuls.
+            # Fixed input shapes -> let cuDNN autotune.
             torch.backends.cudnn.benchmark = True
-            # 'high' (TF32) over 'medium': bf16 autocast already covers
-            # the bulk of compute, so the fp32 matmuls this setting
-            # affects are a tiny edge case not worth trading away.
-            torch.set_float32_matmul_precision("high")
+            if self.m.dtype == torch.float32 and not self.m.allow_tf32:
+                # A float32 run is chosen for resolution, so TF32 must not
+                # quietly coarsen it unless the config allows it.
+                strict_float32()
+            else:
+                # 'high' (TF32) over 'medium': autocast already covers the
+                # bulk of compute, so the fp32 matmuls this setting affects
+                # are a tiny edge case not worth trading away.
+                allow_tf32()
         else:
             self.logger.warning(
                 "CUDA not available, using CPU (not recommended)"
@@ -106,6 +121,35 @@ class CompleteRun:
                     "using bfloat16"
                 )
                 self.m.dtype = torch.bfloat16
+
+    def _augment_linearity(self) -> None:
+        """
+        Wrap the rollout training loader in linearity augmentation, scaling
+        about each axis's static equilibrium (see 'LinearityAugment').
+        """
+
+        loader = self.dloader.trn_loader
+        if not isinstance(loader, RolloutWindowLoader):
+            raise ValueError("Linearity augmentation needs rollout loaders")
+        with h5py.File(self.m.datafile_dir, "r") as f:
+            gain = torch.as_tensor(
+                np.asarray(f.attrs["static_gain_nm_per_count"], float),
+                dtype=torch.float32,
+            )
+        stats = self.dloader.node_info.input_stats
+        layout = self.rollout_layout
+        augmented = LinearityAugment(
+            loader,
+            layout.pos_cols,
+            layout.vel_cols,
+            layout.dac_cols,
+            stats.mean,
+            stats.std,
+            gain,
+            self.m.linearity_augment,
+            seed=self.m.seed,
+        )
+        self.dloader = dataclasses.replace(self.dloader, trn_loader=augmented)
 
     def _create_run_dataloaders(self):
         if self.is_rollout:
@@ -130,6 +174,15 @@ class CompleteRun:
             training_dtype=self.m.dtype,
             load_into_ram=True,
             device=self.device,
+            small_signal=self.m.small_signal,
+            train_start_stride=self.m.train_start_stride,
+            # CUDA graphs replay one recorded shape, so the ragged last
+            # training batch is dropped rather than re-recorded.
+            drop_last_train=(
+                self.m.compile_mode == "reduce-overhead"
+                and self.m.do_compile
+                and self.device == "cuda"
+            ),
         )
         self.logger.info(
             "Splits -> train:%d val:%d test:%d",
@@ -157,7 +210,10 @@ class CompleteRun:
             train_start_stride=int(ro.get("start_stride", 1)),
             val_start_stride=int(ro.get("val_start_stride", 1)),
             drop_last=compiling,
+            small_signal=self.m.small_signal,
         )
+        if self.m.linearity_augment:
+            self._augment_linearity()
         self.logger.info(
             "Rollout splits (H_max=%d) -> train:%d val:%d test:%d",
             max_h,
@@ -288,6 +344,10 @@ class CompleteRun:
         # the trainer 'hw_mode'.
         if "horizon_weighting" in ro:
             overrides["hw_mode"] = str(ro["horizon_weighting"])
+        if "small_signal_flatness" in ro:
+            overrides["small_signal_flatness"] = dict(
+                ro["small_signal_flatness"]
+            )
 
         self.trainer = RolloutTrainer(
             plant,
@@ -311,6 +371,8 @@ class CompleteRun:
             training_dtype=self.m.dtype,
             window_size=self.m.window_size,
             seed=self.m.seed,
+            # A warm start is the bar every epoch must beat.
+            validate_first=bool(self.m.init_checkpoint),
         )
 
     def _train_model(self):

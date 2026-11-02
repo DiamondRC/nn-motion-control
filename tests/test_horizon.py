@@ -7,7 +7,6 @@ import torch
 
 from nn_motion_control.core.config import (
     RunConfiguration,
-    counts_to_nm,
     position_to_nm,
 )
 from nn_motion_control.data.normalize import NormStats
@@ -122,11 +121,3 @@ def test_position_to_nm_from_config():
     assert factor.shape == (3,)
     # The dataset stores position already in nm, so display is identity.
     assert np.allclose(factor, 1.0)
-
-
-def test_counts_to_nm_from_config():
-    rc = RunConfiguration("examples/deltabot/configs/plant_tcn.json")
-    factor = counts_to_nm(rc)
-    assert factor.shape == (3,)
-    # Interferometer resolution 0.256e-9 m/count -> 0.256 nm/count.
-    assert np.allclose(factor, 0.256)

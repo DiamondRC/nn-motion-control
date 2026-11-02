@@ -1,16 +1,6 @@
 """
 Forward-dynamics plant: wrap a one-step model and roll it forward over a
 horizon.
-
-The plant predicts either the position change (delta form) or the absolute
-next position (absolute form); a rollout reconstructs the state and feeds it
-back. In delta form next_position = current + prediction (an integrator, so a
-prediction bias drifts); in absolute form the prediction is the next position
-directly (self-correcting, no integrator drift). Velocity is the change in
-fed position either way, so it stays consistent whether a step is free-running
-or truth-anchored. Commands are exogenous (the recorded DAC stream). The
-reconstruction runs in float32 for numerical stability even when the model
-computes in bf16.
 """
 
 from __future__ import annotations
@@ -22,7 +12,7 @@ from typing import Any
 import torch
 
 from nn_motion_control.core.checkpoints import load_checkpoint_bundle
-from nn_motion_control.core.config import RunConfiguration, counts_to_nm
+from nn_motion_control.core.config import RunConfiguration
 from nn_motion_control.data.loaders import AllDataInfo, build_rollout_splits
 from nn_motion_control.data.normalize import NormStats
 from nn_motion_control.models.builder import build_model
@@ -32,16 +22,19 @@ from nn_motion_control.plant.rollout import (
     RolloutStepper,
     StreamingConvStepper,
     WindowedStepper,
+    bound_row_gradient,
 )
 
 # A control policy maps the current physical state (position, velocity) and
-# the demand (reference position, reference velocity), each [B, A], to a
-# physical DAC command [B, A]. The reference velocity is the PVT feedforward
-# term. Kept a plain callable so the plant does not depend on the control
-# package.
+# the demand (reference position, reference velocity), to a DAC voltage.
+# The reference velocity is the PVT feedforward term.
 ControlPolicy = Callable[
     [torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor], torch.Tensor
 ]
+
+
+# Sensor resolution is declared in metres, captures are read in nm.
+NM_PER_M = 1e9
 
 
 @dataclass(frozen=True)
@@ -50,8 +43,8 @@ class RolloutLayout:
     Which input columns hold position / velocity / command, derived per axis.
     """
 
-    pos_cols: list[int]  # position columns (one per axis; the predicted state)
-    vel_cols: list[int]  # order-1 derived velocity columns (may be empty)
+    pos_cols: list[int]  # position columns (one per axis)
+    vel_cols: list[int]  # order-1 derived velocity columns
     dac_cols: list[int]  # command columns (exogenous)
     n_features: int
 
@@ -69,8 +62,9 @@ class RolloutLayout:
                 f"found {commands}"
             )
         if len(config.target_channels) != 1:
+            # TODO - velocity prediction
             raise NotImplementedError(
-                "Rollout supports predicting one state channel (position); "
+                "Rollout supports predicting one state channel (position), "
                 f"found targets {config.target_channels}"
             )
         pos_name = config.target_channels[0]
@@ -101,8 +95,7 @@ class RolloutLayout:
         if covered != set(range(n_in * len(axes))):
             raise NotImplementedError(
                 "Rollout only supports position/order-1-velocity/command "
-                "inputs; "
-                f"config inputs {in_names} include an unsupported channel"
+                f"inputs, config inputs {in_names} have an unsupported channel"
             )
 
         return cls(pos_cols, vel_cols, dac_cols, n_in * len(axes))
@@ -122,16 +115,42 @@ def rollout_splits_from_config(
     drop_last: bool = False,
     quiescent_seed: Mapping[str, float] | None = None,
     capture_seed: Mapping[str, Any] | None = None,
+    small_signal: Mapping[str, Any] | None = None,
 ) -> AllDataInfo:
     """
     Build rollout splits, sourcing the dataset and column layout from a run
     config.
 
-    The dataset fields (path, channels, window, split ratios) come from
-    'config' and the position/velocity/command columns from 'layout', so a
-    caller passes only what varies per run (horizon, batch, device, strides,
-    seeding).
+    A 'quiescent_seed' speed given per second ('max_speed_per_s') is
+    converted to the per-step speed the filter compares, using the
+    system's data rate, so one threshold means the same at any rate.
     """
+
+    if capture_seed is not None:
+        # The capture reader needs the system's axes, sensor resolution and
+        # rate (a dataset older than schema v3 does not record its rate).
+        position = config.system.channel(config.target_channels[0])
+        grids = set((position.resolution or {}).values())
+        if len(grids) != 1:
+            raise ValueError(
+                f"Capture seeding needs one position resolution, got {grids}"
+            )
+        capture_seed = {
+            "axes": list(config.system.axes),
+            "resolution_nm": float(grids.pop()) * NM_PER_M,
+            "rate_hz": config.system.data_rate_hz,
+            **capture_seed,
+        }
+    if quiescent_seed is not None and "max_speed_per_s" in quiescent_seed:
+        rate = config.system.data_rate_hz
+        if not rate:
+            raise ValueError(
+                "Max_speed_per_s needs the system's data_rate_hz to convert"
+            )
+        quiescent_seed = {
+            **quiescent_seed,
+            "max_speed": float(quiescent_seed["max_speed_per_s"]) / rate,
+        }
 
     return build_rollout_splits(
         h5_path=config.datafile_dir,
@@ -153,7 +172,7 @@ def rollout_splits_from_config(
         drop_last=drop_last,
         quiescent_seed=quiescent_seed,
         capture_seed=capture_seed,
-        capture_pos_scale=counts_to_nm(config),
+        small_signal=small_signal,
     )
 
 
@@ -196,7 +215,10 @@ class Plant:
 
     @property
     def pos_mean(self) -> torch.Tensor:
-        """Per-axis z-score mean of the position inputs (denormalising)."""
+        """
+        Per-axis z-score mean of the position inputs, for denormalising
+        position error.
+        """
 
         return self._im[self._pos]
 
@@ -219,7 +241,9 @@ class Plant:
         return out
 
     def normalise_command(self, dac: torch.Tensor) -> torch.Tensor:
-        """Z-score a physical per-axis command to model units."""
+        """
+        Z-score a physical per-axis command to model units.
+        """
 
         return (dac - self._im[self._dac]) / self._istd[self._dac]
 
@@ -227,11 +251,10 @@ class Plant:
         self, warmup: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
-        Physical (position, velocity), each [B, A], from a warmup window.
+        Each (position, velocity), from a warmup window.
 
         Reads the window's last frame and denormalises it, so a controller
         can anchor a reference trajectory at the true starting state.
-        Velocity is zeros when the input layout carries no velocity channel.
         """
 
         pos, vel = self._pos, self._vel
@@ -244,22 +267,39 @@ class Plant:
 
         return cur_p, cur_v
 
+    def seed_command(self, warmup: torch.Tensor) -> torch.Tensor:
+        """
+        Physical command [B, A] at a warmup window's last frame.
+        """
+
+        dac = self._dac
+        window = warmup.float()
+
+        return window[:, dac, -1] * self._istd[dac] + self._im[dac]
+
     def feature_stats(
-        self, features: Sequence[str], n_integral: int = 0
+        self,
+        features: Sequence[str],
+        n_integral: int = 0,
+        n_state: int = 0,
+        error_scale: float | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
-        Per-feature (mean, std), each [A, F], for controller input
+        Returns the per-feature (mean, std) for controller input
         normalisation.
 
-        Reuses the plant's fitted stats: position and reference take the
-        position mean/std, velocity takes the velocity mean/std, and error
-        (a position difference) takes zero mean with the position std.
-
-        'n_integral' appends that many leaky-integrator taps,
-        so each takes the error's stats (zero mean, position std).
+        'error_scale' (position unit) replaces the workspace position std
+        for the tracking error and the integral taps, so nanometre errors
+        are not crushed below the fixed-point floor. 'n_state' appends
+        identity columns for controller states that arrive already scaled.
         """
 
         pos_m, pos_s = self._im[self._pos], self._istd[self._pos]
+        err_s = (
+            pos_s
+            if error_scale is None
+            else torch.full_like(pos_s, float(error_scale))
+        )
 
         if self._vel.numel():
             vel_m, vel_s = self._im[self._vel], self._istd[self._vel]
@@ -271,8 +311,9 @@ class Plant:
             "velocity": (vel_m, vel_s),
             "reference": (pos_m, pos_s),
             "reference_velocity": (vel_m, vel_s),
-            "error": (torch.zeros_like(pos_m), pos_s),
+            "error": (torch.zeros_like(pos_m), err_s),
             "velocity_error": (torch.zeros_like(vel_m), vel_s),
+            "command": (self._im[self._dac], self._istd[self._dac]),
         }
         unknown = [f for f in features if f not in table]
 
@@ -283,9 +324,13 @@ class Plant:
 
         if n_integral:
             zero = torch.zeros_like(pos_m)[:, None].expand(-1, n_integral)
-            span = pos_s[:, None].expand(-1, n_integral)
+            span = err_s[:, None].expand(-1, n_integral)
             means = torch.cat([means, zero], dim=1)
             stds = torch.cat([stds, span], dim=1)
+        if n_state:
+            zero = torch.zeros_like(pos_m)[:, None].expand(-1, n_state)
+            means = torch.cat([means, zero], dim=1)
+            stds = torch.cat([stds, torch.ones_like(zero)], dim=1)
 
         return means, stds
 
@@ -323,12 +368,7 @@ class Plant:
 
     def make_stepper(self) -> RolloutStepper:
         """
-        Build the per-rollout stepper for this plant's 'rollout_kind'.
-
-        The stepper advances 'self.model' one step at a time; every other
-        rollout concern (reconstruction, scheduled sampling, next-frame
-        assembly) stays in 'roll_forward'. A fresh stepper per rollout keeps
-        any cached state local.
+        Build the per-rollout stepper for this plant's rollout config.
         """
 
         if self.rollout_kind == "windowed":
@@ -339,6 +379,7 @@ class Plant:
             return RecurrentStepper(self.model)
         if self.rollout_kind == "decoupled":
             return DecoupledStepper(self.model)
+
         raise ValueError(f"Unknown rollout_kind: {self.rollout_kind!r}")
 
     def roll_forward(
@@ -351,28 +392,19 @@ class Plant:
         generator: torch.Generator | None = None,
     ) -> torch.Tensor:
         """
-        Roll the plant 'horizon' steps, returning normalised predicted
-        positions.
-
-        'warmup' [B, F, W] seeds the window; 'dac_future' [B, H, A] is the
-        recorded command stream; 'teacher_pos' [B, H, A] (with 'ss_prob' >
-        0) enables scheduled sampling - each step, with probability
-        'ss_prob', the truth is fed forward instead of the prediction.
-        Returns [B, H, A].
-
-        This is the architecture-agnostic reconstruction loop: model
-        advancement is delegated to a 'RolloutStepper' ('reset'/'step'), so
-        a streaming or recurrent model differs only in the stepper, not the
-        physical bookkeeping.
+        Roll the plant through the horizon steps, returning normalised
+        predicted positions.
         """
 
         pos, vel, dac = self._pos, self._vel, self._dac
         tm, tstd = self._tm, self._tstd
-        # Gather the per-axis normalisation constants once: they are
+
+        # Gather the per-axis normalisation constants once - they are
         # constant over the rollout, so indexing them per step is wasted
         # work.
         im_pos, istd_pos = self._im[pos], self._istd[pos]
         im_vel, istd_vel = self._im[vel], self._istd[vel]
+
         # Reconstruction runs in float32 for stability even under a bf16
         # autocast, so cast the (possibly bf16) loader tensors up front to
         # match the state window.
@@ -429,6 +461,9 @@ class Plant:
         horizon: int,
         reference_velocity: torch.Tensor | None = None,
         reanchor_every: int = 0,
+        sensor: Any = None,
+        actuator: Any = None,
+        row_grad_bound: float | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Free-run the plant with the DAC produced by 'policy' each step
@@ -455,6 +490,24 @@ class Plant:
         drift: each segment starts clean, so comparing the tracking
         excursion across segments over a long setpoint shows whether it is
         stationary.
+
+        'sensor' (optional) is the hardware observation model: the policy
+        sees the position and velocity it returns (the encoder-quantised
+        state) rather than the plant's continuous belief, so the trained
+        command does not exploit sub-count detail the real interferometer
+        cannot resolve. The plant still integrates the true state and
+        tracking is scored against it; only the policy's input is filtered.
+
+        'actuator' (optional) is the hardware command model: the policy's
+        command is rolled off through it before the plant integrates it,
+        so the plant is only driven within the band its identification
+        covered and the controller cannot excite the plant's
+        out-of-band fantasy gain. The rolled-off command is what drives
+        the plant and what is returned.
+
+        'row_grad_bound' (training only) bounds each row's gradient through
+        the plant state at every step (see 'bound_row_gradient'), so a row
+        whose closed loop is unstable cannot outweigh the batch.
 
         This runs at the plant's own rate (one control step per plant
         transition); it does not model the 200 kHz-vs-20 kHz servo
@@ -485,6 +538,15 @@ class Plant:
         reset = getattr(policy, "reset", None)
         if callable(reset):
             reset(b, window.device)
+        # A policy that remembers its last command starts from the one
+        # already holding the seed.
+        prime = getattr(policy, "prime", None)
+        if callable(prime):
+            prime(window[:, dac, -1] * istd_dac + im_dac)
+        if sensor is not None:
+            sensor.reset(cur_p)
+        if actuator is not None:
+            actuator.reset(window[:, dac, -1] * istd_dac + im_dac)
 
         positions, dacs = [], []
 
@@ -509,27 +571,38 @@ class Plant:
                         1, vel, ((refv_win - im_vel) / istd_vel).transpose(1, 2)
                     )
                     cur_v = ref_v[:, k, :]
+            if sensor is not None:
+                obs_p, obs_v = sensor.observe(cur_p, cur_v)
+            else:
+                obs_p, obs_v = cur_p, cur_v
             dac_phys = policy(
-                cur_p, cur_v, reference[:, k, :], ref_v[:, k, :]
+                obs_p, obs_v, reference[:, k, :], ref_v[:, k, :]
             )  # [B, A]
-            # Carry the command in the current (last) window frame, then
-            # predict.
+            if actuator is not None:
+                dac_phys = actuator.apply(dac_phys)
+            # A row pairs each position with the command issued a step
+            # earlier, so the next position follows from the window as it
+            # stands (its last row holds the previous command) and the
+            # command just decided from that position rides in the next row.
             dac_norm = (dac_phys - im_dac) / istd_dac
-            last = window[:, :, -1].index_copy(1, dac, dac_norm)
-            win = torch.cat([window[:, :, :-1], last.unsqueeze(-1)], dim=2)
-            out = self.model(win).float() * tstd + tm
+            out = self.model(window).float() * tstd + tm
             next_p = cur_p + out if self.predicts_delta else out
             positions.append(next_p)
             dacs.append(dac_phys)
 
-            # Advance one step: slide in the next frame (its DAC is set on
-            # the next iteration).
+            # Advance one step: slide in the next frame with this command.
             next_v = next_p - cur_p
             new_col = window.new_zeros(b, self.layout.n_features)
             new_col[:, pos] = (next_p - im_pos) / istd_pos
             if vel.numel():
                 new_col[:, vel] = (next_v - im_vel) / istd_vel
-            window = torch.cat([win[:, :, 1:], new_col.unsqueeze(-1)], dim=2)
+            new_col[:, dac] = dac_norm
+            window = torch.cat([window[:, :, 1:], new_col.unsqueeze(-1)], dim=2)
             cur_p, cur_v = next_p, next_v
+            # Training only: one unstable row's exploding gradient must not
+            # own the update.
+            window = bound_row_gradient(window, row_grad_bound)
+            cur_p = bound_row_gradient(cur_p, row_grad_bound)
+            cur_v = bound_row_gradient(cur_v, row_grad_bound)
 
         return torch.stack(positions, dim=1), torch.stack(dacs, dim=1)

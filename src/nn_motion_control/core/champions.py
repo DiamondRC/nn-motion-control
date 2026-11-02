@@ -16,6 +16,9 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 CHAMPION_PREFIX = "champion:"
+REGISTRY_NAME = "champions.json"
+REGISTRY_GLOB = "champions*.json"
+DEFAULT_SPEC_STEM = "system"
 
 
 @dataclass(frozen=True)
@@ -43,10 +46,22 @@ def is_champion_ref(value: object) -> bool:
 
 def registry_path(system_path: str) -> Path:
     """
-    Path to 'champions.json' beside the given SystemSpec file.
+    Path to the champion registry beside the given SystemSpec file.
+
+    Each spec owns its registry, so specs sharing a folder (one stage
+    identified at different rates) never resolve each other's champions:
+    'system.toml' keeps 'champions.json', any other spec gets
+    'champions_<stem>.json'.
     """
 
-    return Path(system_path).resolve().parent / "champions.json"
+    spec = Path(system_path).resolve()
+    name = (
+        REGISTRY_NAME
+        if spec.stem == DEFAULT_SPEC_STEM
+        else f"{Path(REGISTRY_NAME).stem}_{spec.stem}.json"
+    )
+
+    return spec.parent / name
 
 
 def load_champions(path: str | Path) -> dict[str, Champion]:

@@ -1,0 +1,81 @@
+{
+  "model_name": "deltabot_panda_10k_controller_tcn_workspace",
+  "system": "../system_panda_10k.toml",
+  "run": {
+    "out_dir": "../runs",
+    "seed": 42,
+    "init_checkpoint": "../runs/frozen/deltabot_panda_10k_controller_ws_v4_epoch6.pth"
+  },
+  "plant": "champion:plant",
+  "controller": {
+    "features": ["position", "velocity", "reference", "reference_velocity", "error", "command"],
+    "integral_taus": [0.002, 0.006, 0.015],
+    "hidden": [128, 128],
+    "quant": [
+      {
+        "weight_bits": 16,
+        "act_bits": 48
+      },
+      {
+        "weight_bits": 16,
+        "act_bits": 24
+      },
+      {
+        "weight_bits": 16,
+        "act_bits": 24
+      }
+    ],
+    "servo_rate_hz": 10000,
+    "training": {
+      "horizon": 2000,
+      "curriculum_start": 765,
+      "curriculum_ramp": 25,
+      "tracking_weight": 1.0,
+      "velocity_weight": 0.0,
+      "effort_weight": 0.0,
+      "rate_weight": 0.001,
+      "huber_delta": 100.0,
+      "reference": {
+        "kind": "workspace",
+        "margin": 100000.0,
+        "amplitude": [10.0, 1000000.0],
+        "frequency_hz": [0.5, 300.0],
+        "amplitude_curriculum": {
+          "start": 45000.0,
+          "epochs": 6
+        }
+      },
+      "seed_quiescence": {
+        "max_dac_ripple": 10.0,
+        "max_pos_ripple": 1500.0,
+        "max_speed_per_s": 20000.0,
+        "speed_window": 1000,
+        "origin_radius": 20000.0,
+        "off_origin_fraction": 0.5
+      },
+      "start_stride": 64,
+      "val_start_stride": 16,
+      "val_horizon": 10000,
+      "growth_weight": 10.0,
+      "growth_perturb": 200.0,
+      "growth_fraction": 0.25,
+      "growth_tail": 0.5,
+      "growth_min_horizon": 500,
+      "training_dtype": "float32",
+      "seed_curriculum": {
+        "start": 125000.0,
+        "epochs": 6
+      },
+      "tracking_scale": 10.0,
+      "pid_baseline": "../../../data/runs/campaign/20261016-142922/closed_loop/drive_x/20261016-151422/manifest.json"
+    },
+    "batch_size": 64,
+    "max_epochs": 60,
+    "patience": 20,
+    "min_delta": 0.001,
+    "learning_rate": 0.0001,
+    "optimiser": "Adam",
+    "error_scale": 100.0,
+    "error_clip": 50000.0
+  }
+}

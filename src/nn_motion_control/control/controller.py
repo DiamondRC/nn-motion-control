@@ -28,6 +28,14 @@ from nn_motion_control.control.resource import (
 )
 
 _QUANT_EPS = 1e-12
+# Fixed activation scales: each training batch records its peak, over the
+# rollout, of the ACT_QUANTILE row peak (so a single wild row cannot set
+# it). Committed once per batch, the range only ever grows: a fixed-point
+# range must cover the whole operating envelope, not the typical batch, or
+# the rarer large inputs (far holds, long moves) saturate. ACT_HEADROOM
+# sits above it before the code saturates, as it does on the FPGA.
+ACT_QUANTILE = 0.99
+ACT_HEADROOM = 4.0
 # Floor for feat_std so a near-constant input channel doesn't divide by
 # ~0 in normalisation.
 _FEAT_STD_FLOOR = 1e-8
@@ -41,28 +49,38 @@ def _qmax(bits: int) -> int:
     return (1 << (bits - 1)) - 1
 
 
-def _quant_scale(x: torch.Tensor, bits: int) -> torch.Tensor:
+def _quant_scale(
+    x: torch.Tensor, bits: int, per_row: bool = False
+) -> torch.Tensor:
     """
-    Symmetric per-tensor scale mapping the largest magnitude to the top code.
+    Symmetric scale mapping the largest magnitude to the top code, over the
+    whole tensor or, with 'per_row', over each row's last dimension.
     """
 
-    return x.detach().abs().amax().clamp_min(_QUANT_EPS) / _qmax(bits)
+    mag = x.detach().abs()
+    peak = mag.amax(dim=-1, keepdim=True) if per_row else mag.amax()
+
+    return peak.clamp_min(_QUANT_EPS) / _qmax(bits)
 
 
-def fake_quantize(x: torch.Tensor, bits: int) -> torch.Tensor:
+def fake_quantize(
+    x: torch.Tensor, bits: int, per_row: bool = False
+) -> torch.Tensor:
     """
-    Symmetric per-tensor fake-quant with a straight-through estimator.
+    Symmetric fake-quant with a straight-through estimator.
 
     'bits' outside 1..31 is a pass-through, which is how the wide
     (48-bit) interferometer input is represented at full precision in
     simulation. The rounding is non-differentiable, so the gradient is
-    passed straight through to 'x'.
+    passed straight through to 'x'. 'per_row' gives each batch row its own
+    scale, which is the deployed single-sample behaviour and keeps one
+    diverged row from coarsening or poisoning the others.
     """
 
     if bits <= 0 or bits >= 32:
         return x
     qmax = _qmax(bits)
-    scale = _quant_scale(x, bits)
+    scale = _quant_scale(x, bits, per_row)
     q = torch.clamp(torch.round(x / scale), -qmax, qmax) * scale
 
     return x + (q - x).detach()
@@ -78,6 +96,18 @@ def quantize_to_int(x: torch.Tensor, bits: int) -> tuple[torch.Tensor, float]:
     codes = torch.clamp(torch.round(x / scale), -qmax, qmax).to(torch.int64)
 
     return codes, float(scale)
+
+
+def soft_clip(x: torch.Tensor, limit: float | None) -> torch.Tensor:
+    """
+    'limit * tanh(x / limit)': linear well inside the limit, saturating
+    smoothly at it. None passes 'x' through.
+    """
+
+    if limit is None:
+        return x
+
+    return limit * torch.tanh(x / limit)
 
 
 @dataclass(frozen=True)
@@ -115,20 +145,28 @@ class FeatureSpec:
         velocity: torch.Tensor,
         reference: torch.Tensor,
         reference_velocity: torch.Tensor,
+        error_clip: float | None = None,
+        command: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """
         Build the axis-major feature vector '[B, A * count]' from
-        '[B, A]' inputs.
+        '[B, A]' inputs, the error soft-clipped by 'error_clip' if set.
+        'command' is the previous output, required by that feature.
         """
+
+        if "command" in self.names and command is None:
+            raise ValueError("The command feature needs the previous command")
 
         available = {
             "position": position,
             "velocity": velocity,
             "reference": reference,
             "reference_velocity": reference_velocity,
-            "error": reference - position,
+            "error": soft_clip(reference - position, error_clip),
             "velocity_error": reference_velocity - velocity,
         }
+        if command is not None:
+            available["command"] = command
         cols = [available[name] for name in self.names]  # each [B, A]
         stacked = torch.stack(cols, dim=-1)  # [B, A, F]
 
@@ -147,6 +185,10 @@ class BramLayer:
     bias_codes: list[int]  # [out]
     bias_scale: float
     weight_bits: int
+    # Fixed-point step of the layer's input activation, None when it is
+    # unquantised (the wide interferometer input) or was never observed.
+    act_scale: float | None = None
+    act_bits: int | None = None
 
 
 @dataclass(frozen=True)
@@ -172,6 +214,8 @@ class BramExport:
                     "bias_codes": layer.bias_codes,
                     "bias_scale": layer.bias_scale,
                     "weight_bits": layer.weight_bits,
+                    "act_scale": layer.act_scale,
+                    "act_bits": layer.act_bits,
                 }
                 for layer in self.layers
             ],
@@ -219,6 +263,84 @@ class ControllerNet(nn.Module):
         self.register_buffer(
             "feat_std", feat_std.reshape(-1).float().clamp_min(_FEAT_STD_FLOOR)
         )
+        # Per-layer activation range for the fixed scales, learnt while
+        # training. Zero means not yet observed: that layer falls back to a
+        # per-row scale, which is how bundles saved before it behave.
+        self.register_buffer("act_amax", torch.zeros(len(dims) - 1))
+        # This batch's observed peaks, folded into 'act_amax' by
+        # 'commit_act_scales'.
+        self.register_buffer(
+            "act_peak", torch.zeros(len(dims) - 1), persistent=False
+        )
+        # Optional count of activations clipped by the fixed range, read by
+        # the preflight check; off by default so training pays nothing.
+        self.track_saturation = False
+        self.saturated = torch.zeros(())
+        self.observed = torch.zeros(())
+
+    def _load_from_state_dict(self, state_dict, prefix, *args, **kwargs):
+        key = prefix + "act_amax"
+        if key not in state_dict:
+            state_dict[key] = torch.zeros_like(self.get_buffer("act_amax"))
+        super()._load_from_state_dict(state_dict, prefix, *args, **kwargs)
+
+    @torch.no_grad()
+    def commit_act_scales(self) -> None:
+        """
+        Fold the batch's observed peaks into the fixed activation ranges.
+        """
+
+        amax = self.get_buffer("act_amax")
+        peaks = self.get_buffer("act_peak")
+        amax.copy_(torch.maximum(amax, peaks))
+        peaks.zero_()
+
+    def discard_act_peaks(self) -> None:
+        """
+        Drop the batch's observed peaks, for a batch that is not trained on.
+        """
+
+        self.get_buffer("act_peak").zero_()
+
+    def act_scale(self, i: int) -> float | None:
+        """
+        Layer 'i' input activation's fixed-point step, None if unquantised
+        or not yet observed.
+        """
+
+        bits = self.quant[i].act_bits
+        amax = float(self.get_buffer("act_amax")[i])
+        if bits <= 0 or bits >= 32 or amax <= 0.0:
+            return None
+
+        return ACT_HEADROOM * amax / _qmax(bits)
+
+    def _quantize_act(self, x: torch.Tensor, i: int) -> torch.Tensor:
+        bits = self.quant[i].act_bits
+        if bits <= 0 or bits >= 32:
+            return x
+        amax = self.get_buffer("act_amax")[i]
+        if self.training:
+            peaks = self.get_buffer("act_peak")
+            with torch.no_grad():
+                rows = torch.nan_to_num(
+                    x.detach().abs().amax(dim=-1), nan=0.0, posinf=0.0
+                )
+                peak = torch.quantile(rows.float(), ACT_QUANTILE)
+                peaks[i] = torch.maximum(peaks[i], peak)
+            # A new peak is covered within the batch that meets it.
+            amax = torch.maximum(amax, peaks[i])
+        qmax = _qmax(bits)
+        if self.track_saturation and float(amax) > 0:
+            with torch.no_grad():
+                clipped = x.detach().abs() > ACT_HEADROOM * amax
+                self.saturated = self.saturated + clipped.sum().cpu()
+                self.observed = self.observed + clipped.numel()
+        fixed = (ACT_HEADROOM * amax / qmax).clamp_min(_QUANT_EPS)
+        scale = torch.where(amax > 0, fixed, _quant_scale(x, bits, True))
+        q = torch.clamp(torch.round(x / scale), -qmax, qmax) * scale
+
+        return x + (q - x).detach()
 
     @property
     def input_act_bits(self) -> int:
@@ -236,7 +358,7 @@ class ControllerNet(nn.Module):
 
         for i, layer in enumerate(self.linears):
             linear = cast(nn.Linear, layer)
-            x = fake_quantize(x, self.quant[i].act_bits)
+            x = self._quantize_act(x, i)
             w = fake_quantize(linear.weight, self.quant[i].weight_bits)
             x = F.linear(x, w, linear.bias)
             if i != last:
@@ -262,7 +384,9 @@ class ControllerNet(nn.Module):
 
         layers: list[BramLayer] = []
 
-        for layer, spec in zip(self.linears, self.quant, strict=True):
+        for i, (layer, spec) in enumerate(
+            zip(self.linears, self.quant, strict=True)
+        ):
             linear = cast(nn.Linear, layer)
             w_codes, w_scale = quantize_to_int(linear.weight, spec.weight_bits)
             b_codes, b_scale = quantize_to_int(linear.bias, spec.weight_bits)
@@ -273,10 +397,42 @@ class ControllerNet(nn.Module):
                     bias_codes=b_codes.tolist(),
                     bias_scale=b_scale,
                     weight_bits=spec.weight_bits,
+                    act_scale=self.act_scale(i),
+                    act_bits=spec.act_bits,
                 )
             )
 
         return BramExport(layers=layers)
+
+
+def check_safe_range(safe_range: torch.Tensor, n_axes: int) -> None:
+    if safe_range.shape != (n_axes, 2):
+        raise ValueError(
+            f"Safe_range must be [A, 2], got {tuple(safe_range.shape)}"
+        )
+    lo, hi = safe_range[:, 0], safe_range[:, 1]
+    if bool(((lo > 0) | (hi < 0)).any()):
+        raise ValueError(
+            "Safe_range must contain zero on every axis, a zero command "
+            f"is the stage at rest, got {safe_range.tolist()}"
+        )
+
+
+def bounded_command(
+    squashed: torch.Tensor, lo: torch.Tensor, hi: torch.Tensor
+) -> torch.Tensor:
+    """
+    Map a tanh output in (-1, 1) onto the per-axis safe range [lo, hi].
+
+    Each sign scales to its own limit, so a zero output is a zero command
+    however asymmetric the range is, and each side saturates at its own
+    limit.
+    """
+
+    lo = lo.to(squashed.device, squashed.dtype)
+    hi = hi.to(squashed.device, squashed.dtype)
+
+    return torch.where(squashed >= 0, hi, -lo) * squashed
 
 
 class NNPolicy:
@@ -285,8 +441,9 @@ class NNPolicy:
     '(position, velocity, reference) -> dac' policy contract, bounding
     the command to the per-axis DAC safe range.
 
-    The net's raw output is mapped to 'safe_range' with a 'tanh'.
-    Unlike a hard clamp this keeps a live gradient everywhere, so the
+    The net's raw output is mapped to 'safe_range' with a 'tanh', each
+    sign scaled to its own limit (see 'bounded_command'). Unlike a hard
+    clamp this keeps a live gradient everywhere, so the
     policy can always be improved: a hard clamp saturates and zeroes the
     policy gradient once the command hits a rail.
     """
@@ -298,25 +455,33 @@ class NNPolicy:
         safe_range: torch.Tensor,
         n_axes: int,
         integral_lambdas: Sequence[float] | None = None,
+        error_clip: float | None = None,
+        command_backprop_steps: int = 0,
     ):
         taps = len(integral_lambdas) if integral_lambdas else 0
+        if command_backprop_steps < 0:
+            raise ValueError("Command_backprop_steps must be >= 0")
+        # How many steps the gradient may run back through the fed-back
+        # command before it is cut, 0 treating it as a measured input. The
+        # plant and the policy already form a long recurrence, and a second
+        # loop through the controller's own output lets gradients compound.
+        self.command_backprop_steps = command_backprop_steps
+        self._step = 0
+        if error_clip is not None and error_clip <= 0:
+            raise ValueError(f"Error_clip must be > 0, got {error_clip}")
+        self.error_clip = error_clip
         expected = n_axes * (features.count + taps)
         if net.dims[0] != expected:
             raise ValueError(
                 f"Controller input {net.dims[0]} != axes*(features+integral) "
                 f"{expected}"
             )
-        if safe_range.shape != (n_axes, 2):
-            raise ValueError(
-                f"Safe_range must be [A, 2], got {tuple(safe_range.shape)}"
-            )
+        check_safe_range(safe_range, n_axes)
         self.net = net
         self.features = features
         self.n_axes = n_axes
         self._lo = safe_range[:, 0]
         self._hi = safe_range[:, 1]
-        self._centre = (self._lo + self._hi) / 2
-        self._half = (self._hi - self._lo) / 2
 
         # Leaky-integrator error memory:
         # per-axis EMA of the tracking error at each decay lambda,
@@ -327,6 +492,8 @@ class NNPolicy:
             else None
         )
         self._s: torch.Tensor | None = None
+        # The last command issued, fed back when 'command' is a feature.
+        self._u: torch.Tensor | None = None
 
     def reset(self, batch: int, device: torch.device | str) -> None:
         """Clear the integrator state at the start of a rollout."""
@@ -335,6 +502,16 @@ class NNPolicy:
             self._s = torch.zeros(
                 batch, self.n_axes, self._lambda.numel(), device=device
             )
+        self._u = torch.zeros(batch, self.n_axes, device=device)
+        self._step = 0
+
+    def prime(self, command: torch.Tensor) -> None:
+        """
+        Start from the command [B, A] already holding the stage, so taking
+        over is bumpless.
+        """
+
+        self._u = command
 
     def _augment(self, x: torch.Tensor, error: torch.Tensor) -> torch.Tensor:
         """Advance the integrator and append its taps to the features."""
@@ -358,14 +535,33 @@ class NNPolicy:
         reference: torch.Tensor,
         reference_velocity: torch.Tensor,
     ) -> torch.Tensor:
+        if self._u is None:
+            self._u = torch.zeros_like(position)
+        if self._u.shape != position.shape:
+            raise ValueError(
+                f"Previous command {tuple(self._u.shape)} does not match the "
+                f"batch {tuple(position.shape)}, reset the policy first"
+            )
         x = self.features.assemble(
-            position, velocity, reference, reference_velocity
+            position,
+            velocity,
+            reference,
+            reference_velocity,
+            self.error_clip,
+            self._u.to(position.dtype),
         )
         if self._lambda is not None:
-            x = self._augment(x, reference - position)
+            # The taps integrate the clipped error, so a long move cannot
+            # wind them up.
+            x = self._augment(
+                x, soft_clip(reference - position, self.error_clip)
+            )
 
         raw = self.net(x)
-        centre = self._centre.to(raw.device, raw.dtype)
-        half = self._half.to(raw.device, raw.dtype)
+        command = bounded_command(torch.tanh(raw), self._lo, self._hi)
+        self._step += 1
+        n = self.command_backprop_steps
+        cut = n == 0 or self._step % n == 0
+        self._u = command.detach() if cut else command
 
-        return centre + half * torch.tanh(raw)
+        return command

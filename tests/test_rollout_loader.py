@@ -111,3 +111,37 @@ def test_shuffle_is_seed_deterministic():
     c = torch.cat([w for w, _, _ in _loader(range(16), shuffle=True, seed=2)])
     assert torch.equal(a, b)
     assert not torch.equal(a, c)
+
+
+def test_spread_warmups_span_all_starts():
+    starts = list(range(0, 41, 2))
+    warmup = _loader(starts).spread_warmups(3)
+    assert warmup.shape == (3, F_IN, W)
+    # Row of the first window sample, decoded from inputs[r, 0] = r * 10.
+    assert (warmup[:, 0, 0] / 10).tolist() == [0.0, 20.0, 40.0]
+
+
+def test_restrict_narrows_and_restores_the_starts():
+    loader = _loader(list(range(0, 41, 2)), batch_size=4)
+    keep = torch.zeros(21, dtype=torch.bool)
+    keep[:5] = True
+    loader.restrict(keep)
+    assert len(loader.dataset) == 5 and len(loader) == 2
+    # last_frames still covers every start.
+    assert loader.last_frames().shape[0] == 21
+    loader.restrict(None)
+    assert len(loader.dataset) == 21
+
+
+def test_bound_row_gradient_scales_only_the_rows_over_the_limit():
+    from nn_motion_control.plant.rollout import bound_row_gradient
+
+    x = torch.ones(3, 2, requires_grad=True)
+    y = bound_row_gradient(x, 1.0)
+    weights = torch.tensor([[0.1, 0.1], [30.0, 40.0], [0.0, 2.0]])
+    (y * weights).sum().backward()
+    assert x.grad is not None
+    assert torch.allclose(x.grad[0], weights[0])  # under the limit: untouched
+    assert torch.allclose(x.grad[1], torch.tensor([0.6, 0.8]))  # direction kept
+    assert torch.allclose(x.grad[2], torch.tensor([0.0, 1.0]))
+    assert torch.equal(bound_row_gradient(x, None), x)

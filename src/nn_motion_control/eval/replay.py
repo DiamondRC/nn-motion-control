@@ -5,54 +5,44 @@ Drives the plant open-loop with a real command trajectory from an
 external capture (not the training set) and measures how its predicted
 position tracks the recorded position: the one-step error is the plant's
 local fidelity out of distribution, the K-step free-run error is how fast
-it diverges. The capture is single-axis (one interferometer); the other
-axes are held quiescent, matching a single-axis move.
-
-The capture's position is raw encoder counts; scale it to the plant's
-position unit (nm) with 'pos_scale' before it maps onto the model inputs.
-The command is already in the plant's command unit, so it maps straight
-through; only the sample rate may differ (decimate to the plant rate).
+it diverges. The capture is read in the units its file records and placed
+in the plant dataset's frame (see 'panda.DatasetFrame'): resampled and
+referenced as the training rows were, every measured axis carrying its
+recorded position.
 """
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 import numpy as np
 import torch
 
+from nn_motion_control.data.panda import (
+    DatasetFrame,
+    feedback_output,
+    read_closed_loop,
+)
 from nn_motion_control.plant.plant import Plant
-
-# PandA capture channel names: interferometer position (raw encoder
-# counts) and applied command (already in the plant's command unit).
-CAPTURE_POSITION = "INENC1.VAL.Value"
-CAPTURE_COMMAND = "BRETT_PID.REAL_OUTPUT.Value"
 
 
 def load_capture(
     path: str,
-    decimate: int = 1,
-    pos_key: str = CAPTURE_POSITION,
-    dac_key: str = CAPTURE_COMMAND,
-    pos_scale: float = 1.0,
+    frame: DatasetFrame,
+    axes: Sequence[str],
+    resolution_nm: float,
+    axis: int,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
-    Load (position, command) from an HDF5 capture, decimated to the plant
-    rate.
-
-    Returns two float64 [N] arrays. 'decimate' keeps every d-th sample (a
-    20 kHz capture against a 10 kHz plant uses d=2). 'pos_scale' converts
-    the raw-count position to the plant's position unit (nm per count); the
-    command is left in its recorded unit.
+    Load (position, command), each [A, n] float64, from a feedback capture
+    whose controller drove 'axis', in the plant dataset's frame and paired
+    as its rows are (each position beside the command a step earlier).
     """
 
-    import h5py
+    outputs = {axes[axis]: feedback_output(path)}
+    capture = read_closed_loop(path, outputs, axes, resolution_nm)
 
-    from nn_motion_control.data._hdf5 import as_dataset
-
-    with h5py.File(path, "r") as f:
-        pos = as_dataset(f, pos_key)[::decimate].astype(np.float64) * pos_scale
-        dac = as_dataset(f, dac_key)[::decimate].astype(np.float64)
-
-    return pos, dac
+    return frame.rows(*frame.place(capture))
 
 
 def build_replay_batch(
@@ -63,44 +53,33 @@ def build_replay_batch(
     window: int,
     horizon: int,
     stride: int,
-    quiescent: float = 0.0,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
-    Build batched rollout seeds from a single-axis capture.
+    Build batched rollout seeds from a capture ('pos', 'dac' [A, n]).
 
-    Slides a start every 'stride' samples; each seed's active 'axis'
-    carries the real position/velocity/command and the other axes are
-    held at 'quiescent' (undriven). Velocity is the per-step position
-    delta (the plant's own rollout convention). Returns (warmup [B, F, W],
-    dac_future [B, H, A], truth [B, H]) with the active axis's true
+    Slides a start every 'stride' samples, each seed carrying every axis's
+    recorded position, velocity and command. Velocity is the per-step
+    position delta (the plant's own rollout convention). Returns (warmup
+    [B, F, W], dac_future [B, H, A], truth [B, H]) with 'axis''s true
     future position, on the plant's device.
     """
 
     dev = plant.device
-    axes = len(plant.layout.pos_cols)
-    vel = np.diff(pos, prepend=pos[0])
-    starts = np.arange(0, len(pos) - window - horizon, stride)
+    vel = np.diff(pos, axis=1, prepend=pos[:, :1])
+    starts = np.arange(0, pos.shape[1] - window - horizon + 1, stride)
     if starts.size == 0:
         raise ValueError("Capture too short for the requested window/horizon")
 
     def gather(arr: np.ndarray, offset: int, length: int) -> np.ndarray:
         idx = starts[:, None] + offset + np.arange(length)[None, :]
 
-        return arr[idx]  # [B, length]
+        return arr[:, idx].transpose(1, 2, 0)  # [B, length, A]
 
-    batch = starts.size
-
-    def axis_field(win: np.ndarray, length: int, fill: float) -> np.ndarray:
-        field = np.full((batch, length, axes), fill, dtype=np.float64)
-        field[..., axis] = win
-
-        return field
-
-    pos_win = axis_field(gather(pos, 0, window), window, quiescent)
-    vel_win = axis_field(gather(vel, 0, window), window, 0.0)
-    dac_win = axis_field(gather(dac, 0, window), window, 0.0)
-    dac_fut = axis_field(gather(dac, window, horizon), horizon, 0.0)
-    truth = gather(pos, window, horizon)  # [B, H] physical, active axis
+    pos_win = gather(pos, 0, window)
+    vel_win = gather(vel, 0, window)
+    dac_win = gather(dac, 0, window)
+    dac_fut = gather(dac, window, horizon)
+    truth = gather(pos, window, horizon)[..., axis]  # [B, H] physical
 
     def tens(arr: np.ndarray) -> torch.Tensor:
         return torch.as_tensor(arr, dtype=torch.float32, device=dev)
@@ -121,19 +100,17 @@ def replay_errors(
     window: int,
     horizon: int,
     stride: int,
-    quiescent: float = 0.0,
 ) -> torch.Tensor:
     """
     Free-run the plant on the captured command and return |position
-    error| per step, [B, H], in the units of the passed 'pos' (nm when it
-    was loaded with the counts-to-nm 'pos_scale').
+    error| on 'axis' per step, [B, H], in the units of the passed 'pos'.
 
     Step 0 is the one-step (local) error; later steps are the compounding
     free-run drift.
     """
 
     warmup, dac_future, truth = build_replay_batch(
-        plant, pos, dac, axis, window, horizon, stride, quiescent
+        plant, pos, dac, axis, window, horizon, stride
     )
     preds = plant.roll_forward(warmup, dac_future, horizon)[..., axis]
     pred_phys = preds * plant.pos_std[axis] + plant.pos_mean[axis]

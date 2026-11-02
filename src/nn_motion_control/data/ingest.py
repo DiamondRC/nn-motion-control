@@ -216,6 +216,42 @@ def derive_pvaj(
     return {"vel": vel, "acc": acc, "jer": jer}
 
 
+def align_rows(
+    timestep: np.ndarray, pos_xyz: np.ndarray, dac_xyz: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Aligned (state, next-state) rows from one recording, in float64.
+
+    'pos_xyz' and 'dac_xyz' are [3, n] sampled at 'timestep' [n]. The DAC
+    is shifted by one step so DAC[i] is the demand that produced pos[i],
+    velocity/acceleration/jerk are successive finite differences, and the
+    targets are the next state ('*_nxt') and its change ('*_delta').
+    Returns (inputs, targets) laid out as INPUT_LABELS / TARGET_LABELS with
+    'n - ROWS_LOST_PER_FILE' rows.
+    """
+
+    ts = np.asarray(timestep, dtype=np.int64)[1:]
+    pos = np.asarray(pos_xyz, dtype=np.float64)[:, 1:]
+    dac = np.asarray(dac_xyz, dtype=np.float64)[:, :-1]
+    dt_safe = np.clip(np.diff(ts), _DT_EPS, None)
+    pvaj = derive_pvaj(pos, dt_safe)
+    state = np.stack(
+        [pos, pvaj["vel"], pvaj["acc"], pvaj["jer"]], axis=1
+    ).reshape(len(STATE_LABELS), -1)
+    rel = (ts - ts[0]).astype(np.float64)
+
+    # Rows [3, m - 1) are current states with a full V/A/J history and a
+    # next state, row k + 1 is the next state of row k.
+    m = pos.shape[1]
+    cur, nxt = slice(3, m - 1), slice(4, m)
+    inputs = np.concatenate([rel[None, cur], state[:, cur], dac[:, cur]]).T
+    targets = np.concatenate(
+        [rel[None, nxt], state[:, nxt], state[:, nxt] - state[:, cur]]
+    ).T
+
+    return inputs, targets
+
+
 def parse_raw_file(path: Path, storage_dtype: np.dtype) -> FileResult:
     """
     Full per-file pipeline: raw log -> aligned (state, next-state) rows.
@@ -224,52 +260,14 @@ def parse_raw_file(path: Path, storage_dtype: np.dtype) -> FileResult:
     df = read_raw_frame(path)
     n_raw = len(df)
 
-    # Centre positions at the origin; keep the offset so absolute positions
+    # Centre positions at the origin, keep the offset so absolute positions
     # can be reconstructed later.
     pos_offset = df[list(POS_COLS)].mean().to_numpy(dtype=np.float64)
+    pos = df[list(POS_COLS)].to_numpy(dtype=np.float64).T - pos_offset[:, None]
+    dac = df[list(DAC_COLS)].to_numpy(dtype=np.float64).T
+    aligned_in, aligned_tg = align_rows(df["timestep"].to_numpy(), pos, dac)
 
-    for i, col in enumerate(POS_COLS):
-        df[col] = df[col] - pos_offset[i]
-
-    # Shift DAC demands down by one so DAC[i] is the demand that produced
-    # pos[i]. The first row loses its DAC and is dropped explicitly.
-    for col in DAC_COLS:
-        df[col] = df[col].shift(1)
-    df = df.iloc[1:].reset_index(drop=True)
-
-    # Time deltas (guarded against non-positive dt) and a relative
-    # timestep index.
-    ts = df["timestep"].to_numpy(dtype=np.int64)
-    dt_safe = np.clip(np.diff(ts), _DT_EPS, None)
-    df["timestep"] = ts - ts[0]
-
-    # Derive V/A/J - drop the first 3 warm-up rows explicitly.
-    pvaj = derive_pvaj(
-        np.stack([df["x_pos"], df["y_pos"], df["z_pos"]]).astype(np.float64),
-        dt_safe,
-    )
-
-    for i, axis in enumerate("xyz"):
-        df[f"{axis}_vel"] = pvaj["vel"][i]
-        df[f"{axis}_acc"] = pvaj["acc"][i]
-        df[f"{axis}_jer"] = pvaj["jer"][i]
-    df = df.iloc[3:].reset_index(drop=True)
-
-    # Absolute next-state targets via a -1 shift (timestep + every state
-    # channel).
-    for base_label in ("timestep", *STATE_LABELS):
-        df[f"{base_label}_nxt"] = df[base_label].shift(-1)
-
-    # Delta targets: next - current. The tiny per-step change becomes a
-    # zero-centred, well-conditioned target; absolute state is recovered
-    # as current + delta.
-    for base_label in STATE_LABELS:
-        df[f"{base_label}_delta"] = df[f"{base_label}_nxt"] - df[base_label]
-    # The final row lost its next-state (and hence its delta); drop it
-    # explicitly.
-    df = df.iloc[:-1].reset_index(drop=True)
-
-    n_out = len(df)
+    n_out = len(aligned_in)
     expected = n_raw - ROWS_LOST_PER_FILE
     if n_out != expected:
         raise ValueError(
@@ -277,8 +275,8 @@ def parse_raw_file(path: Path, storage_dtype: np.dtype) -> FileResult:
             f"(n_raw={n_raw} - {ROWS_LOST_PER_FILE})"
         )
 
-    inputs = df[INPUT_LABELS].to_numpy(dtype=storage_dtype)
-    targets = df[TARGET_LABELS].to_numpy(dtype=storage_dtype)
+    inputs = aligned_in.astype(storage_dtype)
+    targets = aligned_tg.astype(storage_dtype)
     if not (np.isfinite(inputs).all() and np.isfinite(targets).all()):
         raise ValueError(f"{path}: non-finite values remain after alignment")
 

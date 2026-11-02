@@ -4,6 +4,7 @@ Load raw dataset channels in physical units for analysis.
 Reads the ingested HDF5 directly (not through the training loaders), so the
 analysis sees the recorded values in their own units: position scaled to nm,
 the derived rates in per-step units, and the command in its native unit.
+Only the analysed columns are read, kept in their stored precision.
 """
 
 from __future__ import annotations
@@ -14,7 +15,7 @@ import numpy as np
 
 from nn_motion_control.core.config import unit_to_nm
 from nn_motion_control.core.system import SystemSpec
-from nn_motion_control.data._hdf5 import as_dataset
+from nn_motion_control.data._hdf5 import as_dataset, read_columns
 from nn_motion_control.data.splits import validate_labels
 
 # Channels analysed, in report order. A system missing any of these simply
@@ -90,18 +91,24 @@ def load_channels(system: SystemSpec, data_path: str) -> ChannelData:
             s.decode() if isinstance(s, bytes) else s
             for s in as_dataset(f, "input_labels")[:]
         ]
-        inputs = as_dataset(f, "inputs")[:]  # [N, F]
+        cols = {
+            ch: validate_labels(system.labels([ch]), labels, "input")
+            for ch in present
+        }
+        flat = [c for ch in present for c in cols[ch]]
+        block = read_columns(as_dataset(f, "inputs"), flat)  # [N, sum(A)]
         segment_offsets = as_dataset(f, "segment_offsets")[:].astype(np.int64)
 
     values: dict[str, np.ndarray] = {}
     units: dict[str, str] = {}
+    start = 0
 
     for channel in present:
-        cols = validate_labels(system.labels([channel]), labels, "input")
-        block = inputs[:, cols].astype(np.float64)  # [N, A]
-        if channel == "position":
-            block = block * pos_scale
-        values[channel] = block
+        width = len(cols[channel])
+        values[channel] = block[:, start : start + width]  # [N, A]
+        start += width
+        if channel == "position" and pos_scale != 1.0:
+            values[channel] = values[channel] * pos_scale
         declared = system.channel(channel).unit
         units[channel] = _channel_unit(declared, pos_unit, channel)
 

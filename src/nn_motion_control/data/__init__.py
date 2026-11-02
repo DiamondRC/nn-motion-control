@@ -14,17 +14,20 @@ from nn_motion_control.data.device_loader import (
 )
 from nn_motion_control.data.loaders import (
     AllDataInfo,
+    balance_seeds,
     build_rollout_splits,
     build_time_series_splits,
     ensure_enough_ram,
     make_dataloaders,
     make_device_loaders,
+    oversample_small_signal,
     select_quiescent_starts,
     setup_workers,
 )
 from nn_motion_control.data.normalize import NormStats, fit_stats
 from nn_motion_control.data.splits import (
     build_valid_window_starts,
+    split_window_starts_by_segment,
     split_window_starts_contiguous,
     split_window_starts_random,
     validate_labels,
@@ -38,6 +41,7 @@ __all__ = [
     "NormStats",
     "RolloutWindowLoader",
     "SubsetDataset",
+    "balance_seeds",
     "build_rollout_splits",
     "build_time_series_splits",
     "build_valid_window_starts",
@@ -45,8 +49,10 @@ __all__ = [
     "fit_stats",
     "make_dataloaders",
     "make_device_loaders",
+    "oversample_small_signal",
     "select_quiescent_starts",
     "setup_workers",
+    "split_window_starts_by_segment",
     "split_window_starts_contiguous",
     "split_window_starts_random",
     "validate_labels",

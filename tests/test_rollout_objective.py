@@ -148,6 +148,7 @@ def _bare_rollout_trainer(plant, max_horizon=16, cur_h=4, cur_ss=1.0):
     )
     rt._weight_cache = {}
     rt.axis_weights = None
+    rt.flatness = None
     return rt
 
 
@@ -177,3 +178,68 @@ def test_validation_grades_free_run_at_full_horizon():
     rt._eval_mode = True  # what _validate_epoch sets
     rt._forward_loss(batch)
     assert plant.calls[-1] == (16, 0.0)
+
+
+def _flatness_parts(config_factory):
+    from nn_motion_control.core.config import RunConfiguration
+    from nn_motion_control.data.normalize import NormStats
+    from nn_motion_control.models.builder import JsonModel
+    from nn_motion_control.plant.plant import Plant, RolloutLayout
+
+    rc = RunConfiguration(
+        config_factory(
+            architecture={
+                "window_size": 8,
+                "hidden_layers": [
+                    {"TemporalConv": [9, 8, 3, 1, 1, 0.0]},
+                    {"AdaptiveAvgPool1d": [1]},
+                    {"Flatten": [1]},
+                    {"Linear": [8, 3]},
+                ],
+                "linear_skip": True,
+            },
+            inputs=["position", "velocity", "dac"],
+            targets={"position": {"form": "delta", "weight": 1}},
+        )
+    )
+    model = JsonModel(config=rc)
+    assert model.linear_skip is not None
+    with torch.no_grad():
+        model.linear_skip.weight.normal_()
+
+    def ones(n):
+        return NormStats(
+            mean=torch.zeros(n), std=torch.ones(n), normalizable=torch.ones(n)
+        )
+
+    plant = Plant(model, ones(9), ones(3), RolloutLayout.from_config(rc))
+
+    return model, plant
+
+
+def test_flatness_is_zero_for_a_stack_that_ignores_its_input(
+    config_factory,
+):
+    from nn_motion_control.training.rollout import SmallSignalFlatness
+
+    model, plant = _flatness_parts(config_factory)
+    with torch.no_grad():
+        model.network[-1].weight.zero_()
+    pen = SmallSignalFlatness(model, plant, weight=1.0, counts=1.0, seed=0)
+    assert pen(torch.randn(16, 9, 8)).item() == 0.0
+
+
+def test_flatness_penalises_a_stack_that_responds_and_trains_it_only(
+    config_factory,
+):
+    from nn_motion_control.training.rollout import SmallSignalFlatness
+
+    model, plant = _flatness_parts(config_factory)
+    pen = SmallSignalFlatness(model, plant, weight=1.0, counts=1.0, seed=0)
+    loss = pen(torch.randn(16, 9, 8))
+    assert loss.item() > 0.0
+    loss.backward()
+    assert model.network[-1].weight.grad is not None
+    # The linear path is the reference, never pulled towards the stack.
+    assert model.linear_skip is not None
+    assert model.linear_skip.weight.grad is None

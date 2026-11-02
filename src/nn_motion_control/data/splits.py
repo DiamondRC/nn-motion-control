@@ -3,9 +3,10 @@ Label validation and leakage-aware train/val/test splitting of window
 starts.
 
 A window start is a row that can begin a full window inside a single
-recording. Splitting operates on these start rows, inserting a
-'window_size - 1' gap at each seam so a training window's target row cannot
-reach into the validation range.
+recording. Splitting operates on these start rows, either by the split
+each recording was assigned when the dataset was built, or by ratio over
+the ordered starts with a 'window_size - 1' gap at each seam so a training
+window's target row cannot reach into the validation range.
 """
 
 from __future__ import annotations
@@ -17,6 +18,8 @@ from collections.abc import Sequence
 import numpy as np
 
 logger = logging.getLogger(os.path.basename(__file__))
+
+SPLIT_NAMES = ("train", "val", "test")
 
 
 def validate_labels(
@@ -77,6 +80,41 @@ def build_valid_window_starts(
         )
 
     return np.concatenate(starts)
+
+
+def split_window_starts_by_segment(
+    segment_offsets: np.ndarray,
+    segment_split: np.ndarray,
+    window_size: int,
+    horizon: int = 0,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Train/val/test window starts from each recording's assigned split.
+
+    A window never crosses a recording, so whole-recording splits need no
+    seam gap. Recordings labelled anything else are left out.
+    """
+
+    labels = np.asarray(segment_split)
+    reserve = window_size + horizon
+    out: list[np.ndarray] = []
+
+    for name in SPLIT_NAMES:
+        parts = [
+            np.arange(lo, hi - reserve + 1, dtype=np.int64)
+            for k in np.flatnonzero(labels == name)
+            for lo, hi in [(segment_offsets[k], segment_offsets[k + 1])]
+            if hi - lo >= reserve
+        ]
+        out.append(np.concatenate(parts) if parts else np.empty(0, np.int64))
+    empty = [n for n, idx in zip(SPLIT_NAMES, out, strict=True) if not len(idx)]
+    if empty:
+        raise ValueError(
+            f"No window of size {window_size} + horizon {horizon} fits in "
+            f"any recording of split(s) {empty}"
+        )
+
+    return out[0], out[1], out[2]
 
 
 def _validate_ratios(train_ratio: float, val_ratio: float) -> None:

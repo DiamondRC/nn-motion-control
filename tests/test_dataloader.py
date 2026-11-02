@@ -2,6 +2,8 @@
 normalization and correctly-aligned denorm params.
 """
 
+import math
+
 import h5py
 import numpy as np
 import pytest
@@ -283,3 +285,243 @@ def test_select_quiescent_starts_denormalises_thresholds():
 
     assert keep(7.0) == 0  # physical dac 8 > 7 -> filtered out
     assert keep(9.0) == len(starts)  # physical dac 8 < 9 -> kept
+
+
+def test_steady_holds_count_anywhere_in_the_travel():
+    # A steady large command holding the stage far from rest is a hold
+    # under the ripple test, a changing small one is not.
+    w, n_rows = 4, 40
+    inputs = torch.zeros(n_rows, 3)
+    inputs[:20, 0] = 900.0  # held off origin
+    inputs[:20, 2] = 900.0  # by a large, steady command
+    inputs[20:, 2] = torch.arange(20.0) % 2  # small but ripping command
+    starts = np.arange(0, n_rows - w + 1, dtype=np.int64)
+    common = {
+        "window_size": w,
+        "dac_cols": [2],
+        "vel_cols": [1],
+        "pos_cols": [0],
+        "in_mean": torch.zeros(3),
+        "in_std": torch.ones(3),
+        "max_dac": 10.0,
+        "max_speed": 5.0,
+    }
+    kept = dl.select_quiescent_starts(
+        inputs, starts, **common, max_dac_ripple=0.5
+    )
+    assert set(kept.tolist()) == set(range(17))
+    # The old magnitude test sees only the small command.
+    old = dl.select_quiescent_starts(inputs, starts, **common)
+    assert old.min() >= 20
+    # A box excludes the far holds.
+    boxed = dl.select_quiescent_starts(
+        inputs,
+        starts,
+        **common,
+        max_dac_ripple=0.5,
+        bounds=np.array([[-100.0, 100.0]]),
+    )
+    assert len(boxed) == 0
+
+
+def test_sliding_extent_matches_brute_force():
+    from nn_motion_control.data.loaders import _sliding_extent
+
+    x = torch.randn(200, 2)
+
+    for span in (1, 2, 7, 64, 100):
+        got = _sliding_extent(x, span)
+        want = torch.stack(
+            [
+                (x[j : j + span].amax(0) - x[j : j + span].amin(0)).amax()
+                for j in range(len(x) - span + 1)
+            ]
+        )
+        assert torch.allclose(got, want)
+
+
+def test_a_seed_still_ringing_is_not_settled():
+    # A steady command but a position still swinging through its rest over
+    # the settle span: the slow ring hides inside a short warmup window.
+    w, n_rows, settle = 4, 400, 200
+    inputs = torch.zeros(n_rows, 3)
+    inputs[:, 2] = 500.0
+    t = torch.arange(n_rows, dtype=torch.float32)
+    inputs[:200, 0] = 3000.0 * torch.sin(2 * math.pi * t[:200] / 150.0)
+    starts = np.arange(0, n_rows - w + 1, dtype=np.int64)
+    kept = dl.select_quiescent_starts(
+        inputs,
+        starts,
+        window_size=w,
+        dac_cols=[2],
+        vel_cols=[1],
+        pos_cols=[0],
+        in_mean=torch.zeros(3),
+        in_std=torch.ones(3),
+        max_dac=10.0,
+        max_speed=1e9,
+        speed_window=settle,
+        max_dac_ripple=1.0,
+        max_pos_ripple=100.0,
+    )
+    # Only windows whose whole settle span lies in the quiet half pass.
+    assert kept.min() + w - settle >= 200
+
+
+def test_balance_seeds_sets_the_off_origin_share():
+    inputs = torch.zeros(100, 1)
+    inputs[80:, 0] = 5000.0  # 20 off-origin rows, 80 near rest
+    starts = np.arange(100, dtype=np.int64)
+
+    def balance(fraction):
+        out = dl.balance_seeds(
+            inputs,
+            starts,
+            1,
+            [0],
+            torch.zeros(1),
+            torch.ones(1),
+            origin_radius=100.0,
+            off_origin_fraction=fraction,
+            seed=0,
+        )
+
+        return out, float((out >= 80).mean())
+
+    out, share = balance(0.5)
+    assert len(out) == 40 and share == 0.5  # all 20 far kept, 20 near drawn
+    out, share = balance(0.1)
+    assert share == pytest.approx(0.1, abs=0.01)  # far rows subsampled
+    with pytest.raises(ValueError, match="Off_origin_fraction"):
+        balance(1.0)
+
+
+def _with_segment_split(tmp_path, synth_h5, splits, seg=(30, 30, 20, 20)):
+    """Copy the synthetic rows into a v3-style file with per-segment splits."""
+    offsets = np.concatenate([[0], np.cumsum(seg)]).astype("int64")
+    path = tmp_path / "split.h5"
+    with h5py.File(path, "w") as f:
+        f.create_dataset("inputs", data=synth_h5["inputs"])
+        f.create_dataset("targets", data=synth_h5["targets"])
+        f.create_dataset("segment_offsets", data=offsets)
+        f.create_dataset("segment_split", data=list(splits))
+        f.create_dataset("input_labels", data=list(INPUT_LABELS))
+        f.create_dataset("target_labels", data=list(TARGET_LABELS))
+        f.attrs["schema_version"] = 3
+
+    return str(path), offsets
+
+
+def test_segment_split_keeps_each_recording_whole():
+    offsets = np.array([0, 30, 60, 80, 100])
+    split = np.array(["train", "val", "train", "test"])
+    train, val, test = dl.split_window_starts_by_segment(offsets, split, WINDOW)
+
+    def segment(idx):
+        return set(np.searchsorted(offsets, idx, side="right") - 1)
+
+    assert segment(train) == {0, 2}
+    assert segment(val) == {1}
+    assert segment(test) == {3}
+
+    # Every window stays inside its recording.
+    for idx in (train, val, test):
+        seg = np.searchsorted(offsets, idx, side="right") - 1
+        assert np.all(idx + WINDOW <= offsets[seg + 1])
+
+
+def test_segment_split_needs_every_split():
+    offsets = np.array([0, 30, 60])
+    with pytest.raises(ValueError, match="test"):
+        dl.split_window_starts_by_segment(
+            offsets, np.array(["train", "val"]), WINDOW
+        )
+
+
+def test_segment_split_rows_and_train_only_stats(synth_h5, tmp_path):
+    path, offsets = _with_segment_split(
+        tmp_path, synth_h5, ["train", "val", "train", "test"]
+    )
+    ds = dl.H5TimeSeriesDataset(
+        path,
+        INPUTS_15,
+        _targets_spec(),
+        window_size=WINDOW,
+        load_into_ram=True,
+        dtype=torch.float32,
+    )
+    rows = ds.split_rows("train")
+    assert isinstance(rows, np.ndarray)  # train is not adjacent here
+    expected = np.r_[0:30, 60:80]
+    assert np.array_equal(rows, expected)
+    train, _, _ = dl.split_window_starts_by_segment(
+        offsets, ds.segment_split, WINDOW
+    )
+    ds.fit_normalization(train, "segment")
+    cols = [INPUT_LABELS.index(c) for c in INPUTS_15]
+    want = synth_h5["inputs"][expected][:, cols].astype("float64").mean(0)
+    assert np.allclose(ds._in_mean.numpy(), want, atol=1e-5)
+
+
+def test_adjacent_train_split_is_a_slice(synth_h5, tmp_path):
+    path, _ = _with_segment_split(
+        tmp_path, synth_h5, ["train", "train", "val", "test"]
+    )
+    ds = dl.H5TimeSeriesDataset(path, INPUTS_15, _targets_spec(), WINDOW)
+    assert ds.split_rows("train") == slice(0, 60)
+
+
+def test_time_series_splits_follow_segment_split(synth_h5, tmp_path):
+    path, offsets = _with_segment_split(
+        tmp_path, synth_h5, ["train", "val", "train", "test"]
+    )
+    info = dl.build_time_series_splits(
+        path,
+        INPUTS_15,
+        _targets_spec(),
+        window_size=WINDOW,
+        # The ratios are ignored once the dataset assigns splits.
+        train_ratio=0.5,
+        val_ratio=0.25,
+        training_dtype=torch.float32,
+        auto_tune_workers=False,
+        pin_memory=False,
+    )
+    val_idx = info.val_loader.dataset.indices
+    seg = np.searchsorted(offsets, val_idx, side="right") - 1
+    assert set(seg) == {1}
+    # Train is recordings 0 (30 rows) and 2 (20 rows), no seam gaps.
+    assert len(info.trn_loader.dataset) == (30 - WINDOW + 1) + (20 - WINDOW + 1)
+
+
+def test_windowed_speed_sees_through_noise_and_respects_recordings():
+    w, span = 4, 10
+    n_rows = 60
+    inputs = torch.zeros(n_rows, 3)  # position, velocity, dac
+    # A stage at rest with a +-3 nm per-step jitter: per-step speed is
+    # noise, the span average is not.
+    inputs[:, 0] = torch.tensor([3.0 if i % 2 else -3.0 for i in range(n_rows)])
+    inputs[:, 1] = 6.0  # per-step velocity reads the jitter
+    starts = np.arange(0, n_rows - w + 1, dtype=np.int64)
+    common = {
+        "window_size": w,
+        "dac_cols": [2],
+        "vel_cols": [1],
+        "pos_cols": [0],
+        "in_mean": torch.zeros(3),
+        "in_std": torch.ones(3),
+        "max_dac": 10.0,
+        "max_speed": 2.0,
+    }
+    assert len(dl.select_quiescent_starts(inputs, starts, **common)) == 0
+    kept = dl.select_quiescent_starts(
+        inputs,
+        starts,
+        speed_window=span,
+        segment_offsets=np.array([0, 30, n_rows]),
+        **common,
+    )
+    # Every kept start's span stays inside its own recording.
+    last = kept + w - 1
+    assert len(kept) and np.all((last < 30) | (last - span >= 30))
+    assert np.all(last - span >= 0)

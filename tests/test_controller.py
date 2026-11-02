@@ -12,6 +12,7 @@ from nn_motion_control.control.controller import (
     ControllerNet,
     FeatureSpec,
     NNPolicy,
+    bounded_command,
     fake_quantize,
     quantize_to_int,
 )
@@ -187,6 +188,43 @@ def test_policy_rejects_mismatched_shapes():
         )
 
 
+ASYM_RANGE = torch.tensor([[-2062.0, 1054.0], [-1286.0, 1271.0]])
+
+
+def test_zero_output_is_zero_command_on_an_asymmetric_range():
+    # A zero tanh output is the stage at rest, not the range's midpoint.
+    lo, hi = ASYM_RANGE[:, 0], ASYM_RANGE[:, 1]
+    assert torch.equal(
+        bounded_command(torch.zeros(1, 2), lo, hi), torch.zeros(1, 2)
+    )
+    # Each sign saturates at its own limit.
+    rails = bounded_command(torch.tensor([[1.0, -1.0], [-1.0, 1.0]]), lo, hi)
+    assert torch.equal(
+        rails, torch.tensor([[1054.0, -1286.0], [-2062.0, 1271.0]])
+    )
+
+
+def test_policy_with_zeroed_output_commands_zero():
+    net = _net(in_features=2, out_features=2, hidden=(4,))
+    with torch.no_grad():
+        for p in net.parameters():
+            p.zero_()
+    policy = NNPolicy(net, FeatureSpec(("error",)), ASYM_RANGE, 2)
+    dac = policy(*(torch.randn(3, 2) for _ in range(4)))
+    assert torch.equal(dac, torch.zeros(3, 2))
+
+
+def test_safe_range_must_contain_zero():
+    net = _net(in_features=2, out_features=2, hidden=(4,))
+    with pytest.raises(ValueError, match="contain zero"):
+        NNPolicy(
+            net,
+            FeatureSpec(("error",)),
+            torch.tensor([[10.0, 20.0], [-5.0, 5.0]]),
+            2,
+        )
+
+
 def test_resource_layers_feed_score_controller():
     net = _net(in_features=6, out_features=2, hidden=(8, 8))
     layers = net.resource_layers()
@@ -215,3 +253,62 @@ def test_bram_export_round_trips_json():
         max(abs(c) for row in first["weight_codes"] for c in row)
         <= (1 << 7) - 1
     )
+
+
+def test_per_row_fake_quantize_keeps_rows_independent():
+    x = torch.tensor([[0.3, -0.7, 0.1], [0.2, 0.5, -0.4]])
+    alone = fake_quantize(x[:1], 4, per_row=True)
+    big = torch.cat([x[:1], 1e6 * x[1:]])
+    assert torch.equal(fake_quantize(big, 4, per_row=True)[:1], alone)
+    # A single row is the per-tensor result, the deployed behaviour.
+    assert torch.equal(alone, fake_quantize(x[:1], 4))
+
+
+def test_soft_clip_is_linear_inside_and_bounded_outside():
+    from nn_motion_control.control.controller import soft_clip
+
+    x = torch.tensor([1.0, -1.0, 1e6, -1e6])
+    out = soft_clip(x, 100.0)
+    assert torch.allclose(out[:2], x[:2], rtol=1e-4)
+    assert out.abs().max() <= 100.0
+    assert torch.equal(soft_clip(x, None), x)
+
+
+def test_fixed_activation_scales_are_learnt_then_frozen_and_exported():
+    torch.manual_seed(0)
+    net = ControllerNet(3, 1, [8], [QuantSpec(16, 48), QuantSpec(16, 8)])
+    assert not net.get_buffer("act_amax").any()  # unobserved, per-row
+    net.train()
+    net(torch.randn(64, 3))
+    assert not net.get_buffer("act_amax").any()  # committed per batch
+    net.commit_act_scales()
+    amax = net.get_buffer("act_amax").clone()
+    assert amax[0] == 0  # the wide input layer is not quantised
+    assert amax[1] > 0
+    # Frozen in eval: rows no longer change each other's scale.
+    net.eval()
+    x = torch.randn(4, 3)
+    alone = net(x[:1])
+    big = torch.cat([x[:1], 1e4 * x[1:]])
+    assert torch.equal(net(big)[:1], alone)
+    assert torch.equal(net.get_buffer("act_amax"), amax)
+    layers = net.export_bram().layers
+    assert layers[0].act_scale is None
+    assert layers[1].act_scale == pytest.approx(
+        float(net.act_scale(1)), rel=1e-6
+    )
+
+
+def test_fixed_activation_range_only_grows():
+    torch.manual_seed(0)
+    net = ControllerNet(3, 1, [8], [QuantSpec(16, 48), QuantSpec(16, 24)])
+    net.train()
+    net(10.0 * torch.randn(64, 3))
+    net.commit_act_scales()
+    wide = net.get_buffer("act_amax").clone()
+    # Quieter batches afterwards must not shrink it into saturating the
+    # larger inputs it has already seen.
+    for _ in range(20):
+        net(0.01 * torch.randn(64, 3))
+        net.commit_act_scales()
+    assert torch.equal(net.get_buffer("act_amax"), wide)

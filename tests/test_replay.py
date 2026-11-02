@@ -44,8 +44,12 @@ def plant(config_factory):
 
 
 def _capture(n=200):
+    """Every axis measured: position and command, each [A, n]."""
     t = np.arange(n)
-    return 100.0 * np.sin(t / 20.0), 5.0 * np.cos(t / 15.0)  # pos, dac
+    pos = np.stack([100.0 * np.sin(t / (20.0 + a)) for a in range(3)])
+    dac = np.stack([5.0 * np.cos(t / (15.0 + a)) for a in range(3)])
+
+    return pos, dac
 
 
 def test_build_replay_batch_shapes_and_anchoring(plant):
@@ -53,16 +57,21 @@ def test_build_replay_batch_shapes_and_anchoring(plant):
     warmup, dac_future, truth = build_replay_batch(
         plant, pos, dac, axis=1, window=WINDOW, horizon=6, stride=10
     )
-    starts = np.arange(0, len(pos) - WINDOW - 6, 10)
+    starts = np.arange(0, pos.shape[1] - WINDOW - 6, 10)
     b = len(starts)
     assert warmup.shape == (b, 9, WINDOW)  # [B, F, W]
     assert dac_future.shape == (b, 6, 3)  # [B, H, A]
     assert truth.shape == (b, 6)
-    # Truth is the active axis's real future position (identity stats).
-    want = pos[starts[0] + WINDOW]
+    # Truth is the scored axis's real future position (identity stats).
+    want = pos[1, starts[0] + WINDOW]
     assert truth[0, 0].item() == pytest.approx(want, abs=1e-3)
-    # Inactive axes are held quiescent (zero) in the warmup command rows.
-    assert torch.count_nonzero(warmup[:, (2, 8), :]) == 0  # x, z dac cols
+    # Every axis carries its own recorded command in the warmup (columns
+    # 2, 5, 8 are the x, y, z DAC under identity stats).
+    for a, col in enumerate((2, 5, 8)):
+        got = warmup[0, col].numpy()
+        assert np.allclose(
+            got, dac[a, starts[0] : starts[0] + WINDOW], atol=1e-5
+        )
 
 
 def test_replay_errors_shape_finite_and_nonneg(plant):
@@ -81,22 +90,3 @@ def test_capture_too_short_raises(plant):
         build_replay_batch(
             plant, pos, dac, axis=0, window=WINDOW, horizon=6, stride=10
         )
-
-
-def test_load_capture_scales_position_not_command(tmp_path):
-    import h5py
-
-    from nn_motion_control.eval.replay import (
-        CAPTURE_COMMAND,
-        CAPTURE_POSITION,
-        load_capture,
-    )
-
-    path = tmp_path / "cap.h5"
-    with h5py.File(path, "w") as f:
-        f[CAPTURE_POSITION] = np.arange(10, dtype=np.float64)
-        f[CAPTURE_COMMAND] = np.arange(10, dtype=np.float64)
-    pos, dac = load_capture(str(path), pos_scale=0.256)
-    # Position is scaled counts -> nm; the command is left untouched.
-    assert np.allclose(pos, np.arange(10) * 0.256)
-    assert np.allclose(dac, np.arange(10))

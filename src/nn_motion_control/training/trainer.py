@@ -11,6 +11,9 @@ from nn_motion_control.data.loaders import BatchLoader
 
 logger = logging.getLogger(os.path.basename(__file__))
 
+PERCENT = 100.0
+REDUCED_DTYPES = (torch.bfloat16, torch.float16)
+
 
 def config_overrides(source: dict, casts: dict) -> dict:
     """
@@ -51,6 +54,7 @@ class Trainer:
         window_size: int = 1,
         seed: int = 42,
         grad_clip_norm: float = 1.0,
+        validate_first: bool = False,
     ):
         self.model = model
         self.train_loader = train_loader
@@ -79,6 +83,7 @@ class Trainer:
         self.window_size = window_size
         self.seed = seed
         self.grad_clip_norm = grad_clip_norm
+        self.validate_first = validate_first
 
         self.means = node_info.target_denorm_params["mean"]
         self.stds = node_info.target_denorm_params["std"]
@@ -140,87 +145,194 @@ class Trainer:
         """
 
         self.model.train()
-        total_loss = 0
-
-        # Batches contributed to the mean (skip NaN/Inf)
-        counted_batches = 0
+        # Loss sums and batch counts stay on the device and are read once
+        # per epoch, so a batch costs no host sync; the only one left is
+        # the finiteness check at each optimiser step.
+        total_loss = torch.zeros((), device=self.device)
+        counted_batches = torch.zeros((), device=self.device)
+        n_batches = 0
+        self._skipped_steps = 0
+        self._steps = 0
+        # Gradient norms before clipping over the stepped batches, so a
+        # growing or exploding gradient shows in the log.
+        self._norm_sum = torch.zeros((), device=self.device)
+        self._norm_max = torch.zeros((), device=self.device)
         # Gradients not yet stepped in the current accumulation cycle.
         has_pending = False
+        accumulating = self.accumulation_steps > 1
 
         for batch_idx, batch in enumerate(self.train_loader):
-            if (batch_idx % self.accumulation_steps) == 0:
+            n_batches += 1
+            first = (batch_idx % self.accumulation_steps) == 0
+            if first:
                 self.optimizer.zero_grad(set_to_none=True)
+                # Finite batches stepped into this cycle, on the device.
+                self._cycle_finite = torch.zeros((), device=self.device)
 
             # Mixed precision context for later quantisation support.
             # The per-batch forward and loss live in _forward_loss so
             # subclasses can override them.
-            with autocast(device_type=self.device, dtype=self.training_dtype):
+            with self._autocast():
                 loss = self._forward_loss(batch) / self.accumulation_steps
 
-            if torch.isnan(loss) or torch.isinf(loss):
-                if torch.isnan(loss):
-                    logger.warning(f"NaN at batch {batch_idx}, skipping")
-                else:
-                    logger.warning(f"Inf at batch {batch_idx}, skipping")
+            if self.training_dtype == torch.float16:
+                # float16 loss scaling already syncs to skip overflowing
+                # steps, so the batch is skipped on the host as before.
+                if not torch.isfinite(loss):
+                    logger.warning(f"Non-finite loss at batch {batch_idx}")
+                    if first:
+                        self.optimizer.zero_grad(set_to_none=True)
+                    continue
+                finite = None
+            else:
+                finite = torch.isfinite(loss)
+                loss = torch.where(finite, loss, torch.zeros_like(loss))
+                self._cycle_finite = self._cycle_finite + finite.float()
 
-                if (batch_idx % self.accumulation_steps) == 0:
-                    self.optimizer.zero_grad(set_to_none=True)
-                continue
-
+            # When accumulating, a non-finite batch must leave the cycle's
+            # other gradients as they were, so its contribution is masked
+            # out against a copy taken before it (zero for the first).
+            keep = (
+                self._grads() if finite is not None and accumulating else None
+            )
             self.scaler.scale(loss).backward()
+            if keep is not None:
+                assert finite is not None
+
+                for p, g in zip(self._params(), keep, strict=True):
+                    if p.grad is not None:
+                        prev = torch.zeros_like(p.grad) if g is None else g
+                        p.grad.copy_(torch.where(finite, p.grad, prev))
             has_pending = True
 
             if (batch_idx + 1) % self.accumulation_steps == 0:
                 self._optimizer_step()
                 has_pending = False
 
-            total_loss += loss.item() * self.accumulation_steps
-            counted_batches += 1
+            total_loss += loss.detach().float() * self.accumulation_steps
+            counted_batches += 1.0 if finite is None else finite.float()
 
         # Flush gradients from an incomplete final accumulation cycle so
         # the last 1..accumulation_steps-1 batches are not silently
         # discarded.
         if has_pending:
             self._optimizer_step()
+        stepped = self._steps - self._skipped_steps
+        if stepped:
+            logger.info(
+                "Gradient norm before clipping: mean %.3g, max %.3g",
+                float(self._norm_sum) / stepped,
+                float(self._norm_max),
+            )
+        if self._skipped_steps:
+            logger.warning(
+                "%d of %d optimiser steps (%.0f%%) skipped: no finite batch "
+                "or a non-finite gradient",
+                self._skipped_steps,
+                self._steps,
+                PERCENT * self._skipped_steps / max(self._steps, 1),
+            )
+        if n_batches == 0:
+            logger.warning("The training loader yielded no batches")
 
-        return total_loss / max(counted_batches, 1)
+        return self._mean_loss(total_loss, counted_batches, n_batches)
+
+    def _autocast(self) -> autocast:
+        # Autocast only applies to a reduced precision; float32 runs as is.
+        return autocast(
+            device_type=self.device,
+            dtype=self.training_dtype,
+            enabled=self.training_dtype in REDUCED_DTYPES,
+        )
+
+    def _params(self) -> list[torch.nn.Parameter]:
+        return [p for g in self.optimizer.param_groups for p in g["params"]]
+
+    def _grads(self) -> list[torch.Tensor | None]:
+        return [
+            None if p.grad is None else p.grad.detach().clone()
+            for p in self._params()
+        ]
 
     def _optimizer_step(self):
         """
         Unscale, clip and apply one optimiser step, then update the AMP scaler.
+
+        Outside float16 (whose loss scaler skips overflowing steps itself)
+        the step is skipped entirely, neither the weights nor the optimiser
+        state moving, unless the cycle had a finite batch and the gradient
+        norm is finite: one host sync per step. A non-finite loss can still
+        backpropagate finite zero gradients, so the norm alone is not enough.
         """
 
+        self._steps = getattr(self, "_steps", 0) + 1
         self.scaler.unscale_(self.optimizer)
-        torch.nn.utils.clip_grad_norm_(
+        norm = torch.nn.utils.clip_grad_norm_(
             self.model.parameters(), max_norm=self.grad_clip_norm
         )
+        if self.training_dtype != torch.float16:
+            cycle = getattr(self, "_cycle_finite", None)
+            ok = torch.isfinite(norm)
+            if cycle is not None:
+                ok = ok & (cycle > 0)
+            if not ok:
+                self._skipped_steps = getattr(self, "_skipped_steps", 0) + 1
+                self.optimizer.zero_grad(set_to_none=True)
+                return
+        if hasattr(self, "_norm_sum") and torch.isfinite(norm):
+            self._norm_sum += norm.detach()
+            self._norm_max = torch.maximum(self._norm_max, norm.detach())
         self.scaler.step(self.optimizer)
         self.scaler.update()
 
     def _validate_epoch(self):
         self.model.eval()
-        total_loss = 0
-        # Batches counted, mirroring _train_epoch's averaging.
-        counted_batches = 0
+        total_loss = torch.zeros((), device=self.device)
+        counted_batches = torch.zeros((), device=self.device)
+        n_batches = 0
 
         with torch.no_grad():
             for batch in self.val_loader:
                 # Same dtype as training so val loss is comparable for
                 # early stopping.
-                with autocast(
-                    device_type=self.device, dtype=self.training_dtype
-                ):
+                with self._autocast():
                     loss = self._forward_loss(batch)
+                finite = torch.isfinite(loss)
+                total_loss += torch.where(finite, loss, 0.0).float()
+                counted_batches += finite.float()
+                n_batches += 1
 
-                if torch.isnan(loss):
-                    logger.warning("NaN in validation, skipping")
-                elif torch.isinf(loss):
-                    logger.warning("Inf in validation, skipping")
-                else:
-                    total_loss += loss.item()
-                    counted_batches += 1
+        # One divergent validation batch fails the epoch: averaging only the
+        # finite ones would rank a partly unstable model as the best.
+        if int(counted_batches.item()) < n_batches:
+            logger.warning(
+                "Validation had non-finite batches, scoring the epoch inf"
+            )
+            return float("inf")
 
-        return total_loss / max(counted_batches, 1)
+        return self._mean_loss(total_loss, counted_batches, n_batches)
+
+    @staticmethod
+    def _mean_loss(
+        total: torch.Tensor, counted: torch.Tensor, n_batches: int
+    ) -> float:
+        """
+        Mean loss over the finite batches, read back with one host sync.
+        """
+
+        counted_n = int(counted.item())
+        if counted_n < n_batches:
+            logger.warning(
+                "%d of %d batches had a non-finite loss and were excluded",
+                n_batches - counted_n,
+                n_batches,
+            )
+
+        if counted_n == 0:
+            # Nothing finite to average: never let it read as the best loss.
+            return float("inf")
+
+        return float(total.item()) / counted_n
 
     def get_training_info(self):
         """
@@ -287,6 +399,12 @@ class Trainer:
 
         best_val_loss = float("inf")
         epochs_no_improve = 0
+        if self.validate_first:
+            # A warm-started model sets the bar: an epoch must beat it to
+            # replace it as the best checkpoint.
+            best_val_loss = self._validate_epoch()
+            self._save_checkpoint()
+            logger.info("Epoch 0 (warm start) Val Loss: %.3e", best_val_loss)
         logger.debug(
             f"Training using {self.criterion} loss and "
             f"{self.optimizer} optimizer"

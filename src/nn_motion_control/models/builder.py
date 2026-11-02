@@ -3,6 +3,7 @@ import os
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+import torch
 import torch.nn as nn
 
 from nn_motion_control.core.config import RunConfiguration
@@ -101,6 +102,29 @@ class JsonModel(nn.Module):
         super().__init__()
         self._build_model()
         self.apply(self._init_weights)
+        # The linear path starts silent, so adding it leaves a model's
+        # behaviour unchanged until it is fitted or trained.
+        self.linear_skip: nn.Linear | None = None
+        if self.c.linear_skip:
+            if not self.is_temporal_model or self.is_ssm:
+                raise ValueError("Linear_skip needs a windowed temporal stack")
+            self.linear_skip = nn.Linear(
+                self.c.input_size * self.c.window_size, self.c.target_size
+            )
+            nn.init.zeros_(self.linear_skip.weight)
+            nn.init.zeros_(self.linear_skip.bias)
+            # A fitted linear path held fixed keeps its exact small-signal
+            # response, and the rest of the network trains on what it leaves.
+            self.linear_skip.requires_grad_(not self.c.freeze_linear_skip)
+
+    def _load_from_state_dict(self, state_dict, prefix, *args, **kwargs):
+        # A checkpoint saved without the linear path loads with it silent.
+        if self.linear_skip is not None:
+            for name, param in self.linear_skip.named_parameters():
+                key = f"{prefix}linear_skip.{name}"
+                if key not in state_dict:
+                    state_dict[key] = torch.zeros_like(param)
+        super()._load_from_state_dict(state_dict, prefix, *args, **kwargs)
 
     def _build_model(self):
         output_size = self.c.target_size
@@ -228,21 +252,36 @@ class JsonModel(nn.Module):
 
         return out
 
+    def stack(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        The windowed temporal stack's output alone, without the linear path.
+        """
+
+        if x.dim() != 3:
+            raise ValueError(f"Expected [B, C, T], got {x.shape}")
+        if self.use_channels_last:
+            from nn_motion_control.models.channels_last import (
+                channels_last_tcn_forward,
+            )
+
+            return channels_last_tcn_forward(self.network, x)
+
+        return self.network(x)  # [batch, features, time]
+
     def forward(self, x):
         if self.is_ssm:
             if x.dim() != 3:
                 raise ValueError(f"Expected [B, C, T], got {x.shape}")
             return self._ssm_forward(x)
         if self.is_temporal_model:
-            if x.dim() != 3:
-                raise ValueError(f"Expected [B, C, T], got {x.shape}")
-            if self.use_channels_last:
-                from nn_motion_control.models.channels_last import (
-                    channels_last_tcn_forward,
-                )
+            out = self.stack(x)
+            if self.linear_skip is not None:
+                # A linear stage behaves alike at every amplitude, which
+                # this path can carry exactly while the stack models the
+                # rest.
+                out = out + self.linear_skip(x.flatten(start_dim=1))
 
-                return channels_last_tcn_forward(self.network, x)
-            return self.network(x)  # [batch, features, time]
+            return out
         else:
             # MLP: flatten to [batch, features*time]
             return self.network(x.flatten(start_dim=1))

@@ -22,9 +22,12 @@ import torch
 from nn_motion_control.control.closed_loop import step_reference
 from nn_motion_control.control.config import (
     ControllerConfig,
+    build_actuator,
     build_controller_net,
     build_policy,
+    build_sensor,
 )
+from nn_motion_control.control.pid import PidGains
 from nn_motion_control.control.resource import score_controller
 from nn_motion_control.control.trajectories import (
     build_family,
@@ -33,7 +36,16 @@ from nn_motion_control.control.trajectories import (
     sequence_reference,
     spiral_family,
 )
+from nn_motion_control.control.workspace import (
+    DEFAULT_MARGIN,
+    HOLD_FRACTION,
+    StageModel,
+    WorkspaceLimits,
+    WorkspaceReference,
+)
+from nn_motion_control.core.checkpoints import load_checkpoint_bundle
 from nn_motion_control.core.config import RunConfiguration
+from nn_motion_control.core.precision import strict_float32
 from nn_motion_control.core.seeding import seed_everything
 from nn_motion_control.plant.plant import (
     Plant,
@@ -42,13 +54,27 @@ from nn_motion_control.plant.plant import (
 )
 from nn_motion_control.training.control import ControlTrainer
 from nn_motion_control.training.logging_setup import ModelLogger
+from nn_motion_control.training.preflight import (
+    FAIL,
+    Check,
+    PreflightError,
+    run_preflight,
+)
 from nn_motion_control.training.trainer import config_overrides
+
+logger = logging.getLogger(__name__)
+
+CONTROL_DTYPES = {"bfloat16": torch.bfloat16, "float32": torch.float32}
+
+PREFLIGHT_MODES = ("enforce", "warn", "off")
 
 # Rollout horizon (steps) used when the config omits 'horizon'.
 DEFAULT_HORIZON = 32
 
 
-def make_reference_gen(spec: dict, device: str):
+def make_reference_gen(
+    spec: dict, device: str, limits: WorkspaceLimits | None = None
+):
     """
     Build a PVT reference generator: (origin, horizon,
     generator=None) -> (pos, vel).
@@ -60,6 +86,11 @@ def make_reference_gen(spec: dict, device: str):
     """
 
     kind = spec.get("kind", "step")
+    if kind == "workspace":
+        if limits is None:
+            raise ValueError("A workspace reference needs the workspace limits")
+
+        return WorkspaceReference(spec, limits)
     if kind == "step":
         amplitude = spec.get("amplitude", 0.0)
         step_at = int(spec.get("step_at", 0))
@@ -227,13 +258,169 @@ def shape_spec(shape: str) -> dict:
     return presets[shape]
 
 
+def warm_start(
+    net: torch.nn.Module, config: ControllerConfig, path: str
+) -> None:
+    """
+    Load a saved controller's weights into 'net' after checking it was the
+    same controller for the same plant: architecture, layers, error scale,
+    integrator taps and safe range. Quantisation widths and the error clip
+    may change, since the weights are a valid start either way, and a
+    change is logged. The config may add input features: their first-layer
+    weights start at zero, so the net behaves as the saved one until
+    training moves them. The feature normalisation travels with the
+    weights, so the warm-started net keeps the scales it was trained with.
+    """
+
+    bundle = load_checkpoint_bundle(path, "cpu", weights_only=False)
+    expected = {
+        "artifact_type": "controller",
+        "architecture": config.architecture,
+        "hidden": list(config.hidden),
+        "error_scale": config.error_scale,
+        "integral_lambdas": list(config.integral_lambdas),
+        "safe_range": config.safe_range.cpu().tolist(),
+        "plant_checkpoint": config.plant_checkpoint,
+    }
+    found = {k: bundle.get(k) for k in expected}
+    if isinstance(found["safe_range"], torch.Tensor):
+        found["safe_range"] = found["safe_range"].tolist()
+    old_features = list(bundle.get("features", []))
+    added = [f for f in config.features if f not in old_features]
+    if (
+        found != expected
+        or [f for f in config.features if f in old_features] != old_features
+    ):
+        raise ValueError(
+            f"Cannot warm-start from {path}: it is {found} with features "
+            f"{old_features}, the config asks for {expected} with features "
+            f"{list(config.features)}"
+        )
+    retrained = {
+        "quant": (
+            bundle.get("quant"),
+            [
+                {"weight_bits": q.weight_bits, "act_bits": q.act_bits}
+                for q in config.quant
+            ],
+        ),
+        "error_clip": (bundle.get("error_clip"), config.error_clip),
+    }
+
+    for key, (old, new) in retrained.items():
+        if old != new:
+            logger.info("Warm start changes %s from %s to %s", key, old, new)
+    state = bundle["model_state_dict"]
+    if added:
+        state = _widen_inputs(
+            state,
+            net.state_dict(),
+            _input_slots(old_features, config),
+            _input_slots(list(config.features), config),
+        )
+        logger.info("Warm start adds input features %s at zero weight", added)
+    net.load_state_dict(state)
+    logger.info("Warm-started the controller from %s", path)
+
+
+def _input_slots(features: list[str], config: ControllerConfig) -> list[str]:
+    # Axis-major input layout: per axis its features, then integrator taps.
+    taps = [f"tap{i}" for i in range(len(config.integral_lambdas))]
+
+    return [
+        f"{axis}:{name}" for axis in config.axes for name in features + taps
+    ]
+
+
+def _widen_inputs(
+    old: dict, fresh: dict, old_slots: list[str], new_slots: list[str]
+) -> dict:
+    """
+    The saved state laid onto a wider input layout: each saved input column
+    moves to its slot, new slots take zero weight and the fresh net's
+    normalisation.
+    """
+
+    out = dict(old)
+    dev = fresh["linears.0.weight"].device
+    where = {slot: i for i, slot in enumerate(old_slots)}
+    index = torch.tensor([where.get(s, -1) for s in new_slots], device=dev)
+    known = index >= 0
+    weight = torch.zeros_like(fresh["linears.0.weight"])
+    weight[:, known] = old["linears.0.weight"].to(dev)[:, index[known]]
+    out["linears.0.weight"] = weight
+
+    for key in ("feat_mean", "feat_std"):
+        merged = fresh[key].clone()
+        merged[known] = old[key].to(dev)[index[known]]
+        out[key] = merged
+
+    return out
+
+
+def reference_limits(
+    config: ControllerConfig, plant_config: RunConfiguration, spec: dict
+) -> WorkspaceLimits | None:
+    """
+    The travel box and command range a workspace reference may use, None
+    for the other kinds.
+
+    The box is the system's measured end-stops brought in by the spec's
+    'margin' (position unit), cut to where the static holding command stays
+    within HOLD_FRACTION of the DAC safe range (it binds before the stops on
+    the PandA stage). The command range is the safe range, and the stage
+    model is fitted to the plant dataset's FRF.
+    """
+
+    if spec.get("kind") != "workspace":
+        return None
+    limits = config.system.channel("position").limits
+    if limits is None:
+        raise ValueError("A workspace reference needs position limits")
+    stops = torch.tensor(
+        [limits[axis] for axis in config.axes], dtype=torch.float32
+    )
+    margin = float(spec.get("margin", DEFAULT_MARGIN))
+    safe = config.safe_range
+    stage = StageModel.from_dataset(
+        plant_config.datafile_dir, tuple(config.axes)
+    )
+    holdable = HOLD_FRACTION * stage.gain[:, None] * safe
+
+    return WorkspaceLimits(
+        torch.maximum(stops[:, 0] + margin, holdable[:, 0]),
+        torch.minimum(stops[:, 1] - margin, holdable[:, 1]),
+        safe[:, 0],
+        safe[:, 1],
+        stage,
+        config.servo_rate_hz,
+    )
+
+
+def control_dtype(train: dict) -> torch.dtype:
+    name = str(train.get("training_dtype", "bfloat16"))
+    if name not in CONTROL_DTYPES:
+        raise ValueError(
+            f"Controller training_dtype must be one of {list(CONTROL_DTYPES)}"
+            f", got {name!r}"
+        )
+
+    return CONTROL_DTYPES[name]
+
+
 class ControlRun:
     """
     Train a controller by policy gradient through a frozen plant, then
     report cost.
     """
 
-    def __init__(self, controller_cfg_path: str):
+    def __init__(self, controller_cfg_path: str, run_training: bool = True):
+        """
+        Build the run, pass preflight, then train unless 'run_training' is
+        False (a preflight-only run). The config's training 'preflight' is
+        "enforce" (default: a failed check stops the run), "warn" or "off".
+        """
+
         self.config = ControllerConfig(controller_cfg_path)
         self._setup_logging()
         self._set_seed()
@@ -244,17 +431,27 @@ class ControlRun:
         # Normalise the controller's raw physical inputs with the
         # plant's fitted stats.
         feat_mean, feat_std = plant.feature_stats(
-            self.config.features, n_integral=len(self.config.integral_lambdas)
+            self.config.features,
+            n_integral=len(self.config.integral_lambdas),
+            n_state=self.config.n_state,
+            error_scale=self.config.error_scale,
         )
         net = build_controller_net(self.config, feat_mean, feat_std).to(
             self.device
         )
+        if self.config.init_checkpoint:
+            warm_start(net, self.config, self.config.init_checkpoint)
         policy = build_policy(self.config, net)
+        sensor = build_sensor(self.config)
+        actuator = build_actuator(self.config)
 
         train = self.config.training
+        dtype = control_dtype(train)
+        if dtype == torch.float32:
+            strict_float32()
         horizon = int(train.get("horizon", DEFAULT_HORIZON))
         reference_gen = make_reference_gen(
-            train.get("reference", {}), self.device
+            train.get("reference", {}), self.device, self.limits
         )
         # Loss and curriculum knobs the config may override
         overrides = config_overrides(
@@ -262,15 +459,28 @@ class ControlRun:
             {
                 "curriculum_start": int,
                 "curriculum_ramp": int,
+                "val_horizon": int,
                 "tracking_weight": float,
                 "effort_weight": float,
                 "rate_weight": float,
                 "velocity_weight": float,
                 "huber_delta": float,
+                "tracking_scale": float,
                 "axis_weights": list,
+                "growth_weight": float,
+                "growth_perturb": float,
+                "growth_fraction": float,
+                "growth_tail": float,
+                "growth_min_horizon": int,
+                "row_error_cap": float,
+                "row_grad_bound": float,
             },
         )
 
+        # Growth projection horizon is given in seconds, the trainer counts
+        # steps.
+        project_s = float(train.get("growth_project_s", 0.0))
+        seeds = train.get("seed_curriculum")
         trainer = ControlTrainer(
             plant,
             net,
@@ -278,6 +488,16 @@ class ControlRun:
             self.config,
             reference_gen,
             max_horizon=horizon,
+            growth_project_steps=int(
+                round(project_s * self.config.servo_rate_hz)
+            ),
+            sensor=sensor,
+            actuator=actuator,
+            seed_curriculum=(
+                None
+                if seeds is None
+                else (float(seeds["start"]), int(seeds["epochs"]))
+            ),
             **overrides,
             train_loader=loaders.trn_loader,
             val_loader=loaders.val_loader,
@@ -294,13 +514,21 @@ class ControlRun:
             save_path=self.config.save_path,
             logging=True,
             accumulation_steps=1,
-            # bfloat16 autocast (float32 autocast is unsupported); the
-            # plant's own reconstruction stays float32 internally, as
-            # in plant rollout training.
-            training_dtype=torch.bfloat16,
+            # bfloat16 by default. Its 8-bit mantissa resolves the plant's
+            # normalised position input only to tens of nm, so nm-level
+            # control can ask for float32.
+            training_dtype=dtype,
+            # A warm start is scored before training so it sets the bar.
+            validate_first=self.config.init_checkpoint is not None,
             window_size=self.plant_config.window_size,
             seed=self.config.seed,
         )
+        if self.config.init_checkpoint:
+            trainer.calibrate_activations()
+        self.trainer = trainer
+        self.preflight = self._preflight(trainer)
+        if not run_training:
+            return
         trainer.train()
 
         report = score_controller(
@@ -321,6 +549,34 @@ class ControlRun:
         )
         self.logger.info("Run took %.1fs", time.perf_counter() - self._t0)
 
+    def _preflight(self, trainer: ControlTrainer) -> list[Check]:
+        mode = str(self.config.training.get("preflight", "enforce"))
+        if mode not in PREFLIGHT_MODES:
+            raise ValueError(f"Preflight must be one of {PREFLIGHT_MODES}")
+        if mode == "off":
+            return []
+        manifest = self.config.training.get("pid_baseline")
+        pid = (
+            PidGains.from_manifest(self.config.resolve_path(manifest))
+            if manifest
+            else None
+        )
+        checks = run_preflight(
+            trainer,
+            self.config,
+            self.plant_config.datafile_dir,
+            pid,
+            self.config.logging_dir,
+        )
+        failed = [c.name for c in checks if c.status == FAIL]
+        if failed and mode == "enforce":
+            raise PreflightError(
+                f"Preflight failed: {failed}; see preflight.md in "
+                f"{self.config.logging_dir}"
+            )
+
+        return checks
+
     def _setup_logging(self):
         self._t0 = time.perf_counter()
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -340,6 +596,14 @@ class ControlRun:
     def _build_loaders(self):
         layout = RolloutLayout.from_config(self.plant_config)
         train = self.config.training
+        self.limits = reference_limits(
+            self.config, self.plant_config, train.get("reference", {})
+        )
+        quiescence = train.get("seed_quiescence")
+        if quiescence is not None and self.limits is not None:
+            # Seeds outside the box would leave their references no room.
+            box = torch.stack([self.limits.pos_lo, self.limits.pos_hi], 1)
+            quiescence = {**quiescence, "bounds": box.tolist()}
         return rollout_splits_from_config(
             self.plant_config,
             layout,
@@ -355,7 +619,7 @@ class ControlRun:
             # Seed the controller from quiescent relaxation holds (its
             # operating start), not the plant-ID excitation transients
             # that fill an arbitrary window.
-            quiescent_seed=train.get("seed_quiescence"),
+            quiescent_seed=quiescence,
             # Additionally seed from recorded closed-loop captures, the
             # mid-scan operating states the open-loop ID set never visits.
             capture_seed=self._capture_seed(train.get("seed_captures")),

@@ -15,7 +15,7 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
-from nn_motion_control.data._hdf5 import as_dataset
+from nn_motion_control.data._hdf5 import as_dataset, read_columns
 from nn_motion_control.data.normalize import NormStats, fit_stats
 from nn_motion_control.data.splits import validate_labels
 
@@ -107,6 +107,14 @@ class H5TimeSeriesDataset(Dataset):
                 as_dataset(f, "segment_offsets"), dtype=np.int64
             )
             self.num_samples = int(as_dataset(f, self.DATA_KEY).shape[0])
+            # Schema v3 assigns each recording a split at build time.
+            self.segment_split = (
+                np.array(
+                    [x.decode("utf-8") for x in as_dataset(f, "segment_split")]
+                )
+                if "segment_split" in f
+                else None
+            )
 
         self._input_idx = validate_labels(
             self.allowed_inputs, list(self.input_labels), "input"
@@ -124,13 +132,9 @@ class H5TimeSeriesDataset(Dataset):
         )
 
     def _load_all_to_ram(self) -> None:
-        # Read full columns into numpy first, then select: the requested
-        # column order (channel-name expansion) need not be increasing, but
-        # h5py's multi-axis fancy indexing requires increasing indices,
-        # numpy indexing does not.
         with h5py.File(self.h5_path, "r") as f:
-            x = np.asarray(as_dataset(f, self.DATA_KEY))[:, self._input_idx]
-            y = np.asarray(as_dataset(f, self.TARGET_KEY))[:, self._target_idx]
+            x = read_columns(as_dataset(f, self.DATA_KEY), self._input_idx)
+            y = read_columns(as_dataset(f, self.TARGET_KEY), self._target_idx)
 
         self._inputs = torch.from_numpy(x).to(self.dtype)
         self._targets = torch.from_numpy(y).to(self.dtype)
@@ -169,10 +173,15 @@ class H5TimeSeriesDataset(Dataset):
         """
         Fit z-score params from the train rows only and build final
         metadata.
+
+        In 'segment' mode the rows are every row of the recordings assigned
+        to train, 'train_starts' is not consulted.
         """
 
         w = self.window_size
-        if split_mode == "contiguous":
+        if split_mode == "segment":
+            in_sel = tgt_sel = self.split_rows("train")
+        elif split_mode == "contiguous":
             lo, hi = int(train_starts.min()), int(train_starts.max())
             in_sel: object = slice(
                 lo, hi + w
@@ -198,6 +207,31 @@ class H5TimeSeriesDataset(Dataset):
         self._tgt_mean, self._tgt_std = target_stats.mean, target_stats.std
 
         self.meta = self._build_meta(input_stats, target_stats)
+
+    def split_rows(self, split: str) -> slice | np.ndarray:
+        """
+        Every row of the recordings assigned to 'split'.
+
+        A slice when those recordings are adjacent (a v3 build stores them
+        split-major), so in-RAM stats read a view rather than a copy.
+        """
+
+        if self.segment_split is None:
+            raise ValueError(
+                f"Dataset {self.h5_path} assigns no per-segment split"
+            )
+        seg = np.flatnonzero(self.segment_split == split)
+        if not len(seg):
+            raise ValueError(
+                f"Dataset {self.h5_path} has no '{split}' recordings"
+            )
+        lo, hi = self.segment_offsets[seg], self.segment_offsets[seg + 1]
+        if np.all(seg == np.arange(seg[0], seg[0] + len(seg))):
+            return slice(int(lo[0]), int(hi[-1]))
+
+        return np.concatenate(
+            [np.arange(a, b) for a, b in zip(lo, hi, strict=True)]
+        )
 
     @property
     def input_norm(self) -> tuple[torch.Tensor, torch.Tensor]:

@@ -1,0 +1,63 @@
+{
+  "model_name": "deltabot_panda_20k_controller_tcn_integral",
+  "system": "../system_panda_20k.toml",
+  "run": {
+    "out_dir": "../runs",
+    "seed": 42
+  },
+  "plant": "champion:plant",
+  "controller": {
+    "features": ["position", "velocity", "reference", "reference_velocity"],
+    "integral_taus": [0.002, 0.006, 0.015],
+    "hidden": [128, 128],
+    "quant": [
+      {
+        "weight_bits": 16,
+        "act_bits": 48
+      },
+      {
+        "weight_bits": 16,
+        "act_bits": 16
+      },
+      {
+        "weight_bits": 16,
+        "act_bits": 16
+      }
+    ],
+    "servo_rate_hz": 20000,
+    "training": {
+      "horizon": 192,
+      "curriculum_start": 48,
+      "curriculum_ramp": 10,
+      "tracking_weight": 1.0,
+      "velocity_weight": 0.0,
+      "effort_weight": 0.001,
+      "rate_weight": 0.004,
+      "huber_delta": 100.0,
+      "reference": {
+        "kind": "mixed",
+        "xy": [0, 1],
+        "radius": [100.0, 1200.0],
+        "angular": [0.001, 0.01],
+        "z_rate": [-10.0, 10.0],
+        "step": [-800.0, 800.0],
+        "smooth_amp": [0.0, 250.0],
+        "components": 3,
+        "weights": [1.0, 1.0, 1.0, 1.0]
+      },
+      "seed_quiescence": {
+        "max_dac": 20.0,
+        "max_speed_per_s": 20000.0,
+        "speed_window": 1000
+      },
+      "start_stride": 8,
+      "val_start_stride": 64
+    },
+    "batch_size": 256,
+    "max_epochs": 60,
+    "patience": 15,
+    "min_delta": 0.001,
+    "learning_rate": 0.001,
+    "optimiser": "Adam"
+  }
+}

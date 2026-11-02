@@ -1,0 +1,78 @@
+# SystemSpec for the deltabot stage driven open loop by the PandA, as captured
+# in the October 2026 janus-motus runs (datasets/panda_10k.json).
+#
+# Same channels and labels as system.toml, so plant and controller configs
+# carry over. The command is the PGEN/OUTENC value sent to the amplifiers, in
+# DAC counts (about 1:1 with the old PMAC DAC unit). Position is the
+# interferometer reading in nm (0.256 nm/count), referenced to each capture's
+# rest position.
+
+name = "deltabot"
+axes = ["x", "y", "z"]
+servo_rate_hz = 10_000 # One controller update per plant step
+data_rate_hz  = 10_000 # Rate the dataset was resampled to (drive rate 20 kHz)
+
+[target]
+board = "xc7z030"
+clock_hz = 125_000_000
+
+[channels.position]
+kind       = "measured"
+unit       = "nm"
+per_axis   = true
+label      = "{axis}_pos"
+resolution = 0.256e-9 # Interferometer, m/count
+
+[channels.position.limits]     # measured end-stop contacts from rest, in nm
+x = [-1_601_400, 1_580_300]
+y = [-2_117_900, 1_086_400]    # y sits off-centre (gravity sag on the vertical axis)
+z = [-1_468_800, 1_687_200]
+
+# nm std over a 30 s zero-command hold: ambient vibration and slow drift, not
+# the white per-sample sensor noise, which is about 1 nm.
+[channels.position.noise_rms]
+x = 177.0
+y = 154.0
+z = 164.0
+
+[channels.velocity]
+kind  = "derived"
+from  = "position"
+order = 1
+label = "{axis}_vel"
+
+[channels.acceleration]
+kind  = "derived"
+from  = "position"
+order = 2
+label = "{axis}_acc"
+
+[channels.jerk]
+kind  = "derived"
+from  = "position"
+order = 3
+label = "{axis}_jer"
+
+[channels.dac]
+kind     = "command"
+unit     = "counts"
+per_axis = true
+label    = "{axis}_DAC_real"
+
+# Largest command applied open loop without harm, in any record of the full-rate
+# campaign: 2000 on the high-band multisines (x, z) and 2309 on a quasi-static
+# y- travel level. Kept the same at every rate, though the 10 kHz build drops
+# the high band (its own peaks are 1433 / 2309 / 1701). Safe amplitude falls
+# with frequency below the resonance, so this is not a static guarantee.
+[channels.dac.range]
+x = [-2000, 2000]
+y = [-2309, 2309]
+z = [-2000, 2000]
+
+# 0.875 of each side's measured contact command: a quasi-static clamp only,
+# the 12 Hz resonance amplifies a step about 3x, so travel protection must come
+# from position.
+[channels.dac.safe_range]
+x = [-1286, 1271]
+y = [-2062, 1054]
+z = [-1336, 1520]

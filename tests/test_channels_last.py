@@ -53,3 +53,22 @@ def test_enable_channels_last_switches_forward_equivalently():
         got = m(window)  # channels-last path
     assert m.use_channels_last
     assert torch.allclose(ref, got, atol=1e-4, rtol=1e-3)
+
+
+def test_channels_last_gradients_match_conv1d():
+    # Training runs the backward through this path, so the weight
+    # gradients must match the conv1d stack's too, not only the output.
+    ref_model, cl_model = _tcn().eval(), _tcn().eval()
+    cl_model.load_state_dict(ref_model.state_dict())
+    torch.manual_seed(2)
+    window = torch.randn(4, 9, 64)
+    ref_model.network(window).square().sum().backward()
+    channels_last_tcn_forward(
+        cl_model.network, window
+    ).square().sum().backward()
+
+    for (name, a), (_, b) in zip(
+        ref_model.named_parameters(), cl_model.named_parameters(), strict=True
+    ):
+        assert a.grad is not None and b.grad is not None, name
+        assert torch.allclose(a.grad, b.grad, atol=1e-4, rtol=1e-3), name

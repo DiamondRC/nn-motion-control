@@ -1,0 +1,35 @@
+{
+  "runs_root": "../../../data/runs",
+  "output": "../data/panda_20k.h5",
+  "rate_hz": 20000,
+  "drive_rate_hz": 20000,
+  "capture_rate_hz": 40000,
+  "resolution_nm": 0.256,
+  "rest_seconds": 0.02,
+  "seed": 0,
+  "sources": [
+    { "glob": "campaign/20261016-142922/**/*.h5", "split": "train" },
+    {
+      "glob": "campaign/20261016-152915/**/*.h5",
+      "split": ["val", "test"],
+      "exclude": ["*/ref_*/*", "*/sweep/*"]
+    },
+    { "glob": "campaign/20261016-152915/ref_*/*/*.h5", "split": "train" },
+    { "glob": "campaign/20261016-152915/sweep/*.h5", "split": "train" },
+    { "glob": "profile/20261015-141040/band_*/*.h5", "split": "train", "max_seconds": 12 },
+    { "glob": "profile_bla/2*/bla_*/*.h5", "split": "train", "max_seconds": 12 },
+    { "glob": "travel*/2*/*/*.h5", "split": "train" }
+  ],
+  "exclude": ["*/closed_loop/*", "*.stopped-*", "*.zlost/*"],
+  "stops_um": {
+    "x": [-1601.4, 1580.3],
+    "y": [-2117.9, 1086.4],
+    "z": [-1468.8, 1687.2]
+  },
+  "stop_margin_um": 50,
+  "frf": {
+    "x": "profile/20261015-141040/x_stitched.npz",
+    "y": "profile/20261015-141040/y_stitched.npz",
+    "z": "profile/20261015-141040/z_stitched.npz"
+  }
+}

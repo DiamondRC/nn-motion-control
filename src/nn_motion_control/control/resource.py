@@ -17,7 +17,8 @@ from dataclasses import dataclass
 # Feature roles a controller may consume: position/velocity come from the
 # plant state, reference/reference_velocity are the PVT demand, error is
 # reference - position and velocity_error is reference_velocity -
-# velocity (all synthesised at run time).
+# velocity (all synthesised at run time). command is the controller's own
+# previous output, which lets it hold any level and form an incremental law.
 ALLOWED_FEATURES: tuple[str, ...] = (
     "position",
     "velocity",
@@ -25,6 +26,7 @@ ALLOWED_FEATURES: tuple[str, ...] = (
     "reference_velocity",
     "error",
     "velocity_error",
+    "command",
 )
 
 
@@ -179,6 +181,94 @@ class LayerCost:
             "dsp_cycles": self.dsp_cycles,
             "bram_bits": self.bram_bits,
         }
+
+
+# Multiplies per axis per step in the recurrent controller's error-state
+# update: the integrator scales the error and the anti-windup deficit, a
+# leaky mode scales its decrement, and a resonant pair applies its
+# decrement and its rotation to both parts plus its input gain.
+INTEGRATOR_MACS = 2
+LEAKY_MACS = 1
+RESONANT_MACS = 5
+# Stored coefficients per mode: a leaky mode holds its decrement, a
+# resonant pair its decrement, rotation and input gain.
+LEAKY_COEFFS = 1
+RESONANT_COEFFS = 3
+
+
+def recurrence_cost(
+    n_axes: int,
+    n_leaky: int,
+    n_resonant: int,
+    coeff_bits: int,
+    state_bits: int,
+    hw: HardwareModel = _DEFAULT_HW,
+) -> LayerCost:
+    """
+    Cost of the recurrent controller's per-axis error-state update.
+
+    Each multiply pairs a 'coeff_bits' coefficient with a 'state_bits'
+    state (the wide accumulator). The integrator's gain and anti-windup
+    constants are fixed design values, hardwired rather than stored.
+
+    >>> cost = recurrence_cost(3, 2, 2, 16, 48)
+    >>> cost.macs, cost.params, cost.dsp_per_mac
+    (42, 24, 2)
+    """
+
+    if n_axes <= 0 or n_leaky < 0 or n_resonant < 0:
+        raise ValueError("Recurrence needs axes and non-negative mode counts")
+    per_axis = (
+        INTEGRATOR_MACS + LEAKY_MACS * n_leaky + RESONANT_MACS * n_resonant
+    )
+    macs = n_axes * per_axis
+    params = n_axes * (LEAKY_COEFFS * n_leaky + RESONANT_COEFFS * n_resonant)
+    per_mac = dsp_per_mac(state_bits, coeff_bits, hw)
+
+    return LayerCost(
+        in_features=n_axes,
+        out_features=n_axes * (1 + n_leaky + 2 * n_resonant),
+        weight_bits=coeff_bits,
+        act_bits_in=state_bits,
+        params=params,
+        macs=macs,
+        dsp_per_mac=per_mac,
+        dsp_cycles=macs * per_mac,
+        bram_bits=params * coeff_bits,
+    )
+
+
+def axis_readout_cost(
+    n_axes: int,
+    width: int,
+    weight_bits: int,
+    act_bits: int,
+    hw: HardwareModel = _DEFAULT_HW,
+) -> LayerCost:
+    """
+    Cost of a per-axis linear readout: each axis's output is a weighted
+    sum of its own 'width' inputs (block-diagonal, not dense across axes).
+
+    >>> axis_readout_cost(3, 6, 16, 48).macs
+    18
+    """
+
+    if n_axes <= 0 or width <= 0:
+        raise ValueError("Readout needs axes and a positive width")
+    macs = n_axes * width
+    per_mac = dsp_per_mac(act_bits, weight_bits, hw)
+
+    return LayerCost(
+        in_features=n_axes * width,
+        out_features=n_axes,
+        weight_bits=weight_bits,
+        act_bits_in=act_bits,
+        params=macs,
+        macs=macs,
+        dsp_per_mac=per_mac,
+        dsp_cycles=macs * per_mac,
+        bram_bits=macs * weight_bits,
+    )
 
 
 def dense_layers(

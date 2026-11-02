@@ -1,0 +1,79 @@
+{
+  "system": "../system_panda_10k.toml",
+  "role": "plant",
+  "model_name": "deltabot_panda_10k_plant_exp_last",
+  "architecture": {
+    "window_size": 64,
+    "hidden_layers": [
+      {
+        "TemporalConv": [9, 64, 3, 1, 1, 0.0]
+      },
+      {
+        "TemporalConv": [64, 64, 3, 1, 2, 0.0]
+      },
+      {
+        "TemporalConv": [64, 64, 3, 1, 4, 0.0]
+      },
+      {
+        "TemporalConv": [64, 64, 3, 1, 8, 0.0]
+      },
+      {
+        "TemporalConv": [64, 64, 3, 1, 16, 0.0]
+      },
+      {
+        "LastFrame": []
+      },
+      {
+        "Flatten": [1]
+      },
+      {
+        "Linear": [64, 128]
+      },
+      "ReLU",
+      {
+        "Linear": [128, 3]
+      }
+    ]
+  },
+  "inputs": ["position", "velocity", "dac"],
+  "targets": {
+    "position": {
+      "form": "delta",
+      "weight": 1
+    }
+  },
+  "data": "../data/panda_10k.h5",
+  "training": {
+    "batch_size": 1024,
+    "max_epochs": 6,
+    "patience": 6,
+    "min_delta": 1e-5,
+    "learning_rate": 0.0001,
+    "optimiser": "AdamW",
+    "grad_scaler": "GradScaler",
+    "loss_function": "WeightedMSELoss",
+    "training_dtype": "float32",
+    "accumulation_steps": 1,
+    "test_display_num": 3,
+    "dataloader": {
+      "auto_tune": false,
+      "cpu_util": 80,
+      "num_workers": 8,
+      "prefetch_factor": 4
+    },
+    "small_signal": {
+      "band": [0.5, 5.0],
+      "factor": 10,
+      "span": 1000
+    },
+    "start_stride": 4,
+    "allow_tf32": true
+  },
+  "run": {
+    "seed": 42,
+    "out_dir": "../runs",
+    "verbose_logging": true,
+    "compile_mode": "reduce-overhead",
+    "init_checkpoint": "../runs/frozen/deltabot_panda_10k_plant_fp32_best.pth"
+  }
+}

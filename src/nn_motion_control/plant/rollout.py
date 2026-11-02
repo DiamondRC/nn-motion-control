@@ -19,12 +19,51 @@ from nn_motion_control.models.layers.tcn import TemporalBlock
 from nn_motion_control.models.ssm import DiagSSM
 
 __all__ = [
+    "bound_row_gradient",
     "RolloutStepper",
     "WindowedStepper",
     "StreamingConvStepper",
     "RecurrentStepper",
     "DecoupledStepper",
 ]
+
+
+# Floor on a row's gradient norm before dividing by it.
+_NORM_FLOOR = 1e-30
+
+
+class _BoundRowGradient(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, x: torch.Tensor, limit: float) -> torch.Tensor:
+        ctx.limit = limit
+
+        return x.view_as(x)
+
+    @staticmethod
+    def backward(ctx, *grads: torch.Tensor) -> tuple[torch.Tensor, None]:
+        g = grads[0]
+        norm = g.flatten(1).norm(dim=1).clamp_min(_NORM_FLOOR)
+        scale = (ctx.limit / norm).clamp(max=1.0)
+        shape = (-1,) + (1,) * (g.dim() - 1)
+
+        return g * scale.view(shape), None
+
+
+def bound_row_gradient(x: torch.Tensor, limit: float | None) -> torch.Tensor:
+    """
+    Identity on the forward pass, and on the backward pass each batch row's
+    gradient is scaled down to norm 'limit' if it exceeds it.
+
+    Applied to a rollout's state every step, a row whose closed loop is
+    unstable, and whose gradient therefore grows exponentially with the
+    horizon, keeps its direction but cannot outweigh the rest of the batch.
+    None passes 'x' through untouched.
+    """
+
+    if limit is None or not x.requires_grad:
+        return x
+
+    return cast(torch.Tensor, _BoundRowGradient.apply(x, limit))
 
 
 @runtime_checkable

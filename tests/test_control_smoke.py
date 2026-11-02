@@ -7,11 +7,13 @@ import json
 from pathlib import Path
 
 import numpy as np
+import pytest
 import torch
 from torch import nn
 
 from nn_motion_control.control.closed_loop import step_reference
 from nn_motion_control.control.config import (
+    CONTROLLER_SCHEMA,
     Controller,
     ControllerConfig,
     build_controller_net,
@@ -100,7 +102,7 @@ def _fake_node_info() -> DatasetMetadata:
     )
 
 
-def _write_controller_config(tmp_path) -> str:
+def _write_controller_config(tmp_path, extra: dict | None = None) -> str:
     system_path = tmp_path / "tiny.toml"
     system_path.write_text(TINY_SYSTEM)
     cfg = {
@@ -128,13 +130,24 @@ def _write_controller_config(tmp_path) -> str:
             "learning_rate": 0.05,
         },
     }
+    cfg["controller"].update(extra or {})
     path = tmp_path / "controller.json"
     path.write_text(json.dumps(cfg))
     return str(path)
 
 
-def test_controller_smoke_trains_and_exports(tmp_path):
-    config = ControllerConfig(_write_controller_config(tmp_path))
+# The recurrent arm swaps the fixed-tap MLP for the learned error-state
+# bank; both must train, export and reload through the same path.
+RECURRENT = {
+    "architecture": "recurrent",
+    "error_scale": 1.0,
+    "recurrent": {"n_leaky": 1, "n_resonant": 1, "readout": "linear+mlp"},
+}
+
+
+@pytest.mark.parametrize("extra", [None, RECURRENT], ids=["mlp", "recurrent"])
+def test_controller_smoke_trains_and_exports(tmp_path, extra):
+    config = ControllerConfig(_write_controller_config(tmp_path, extra))
     net = build_controller_net(config)
     policy = build_policy(config, net)
     plant = _dac_plant()
@@ -182,7 +195,22 @@ def test_controller_smoke_trains_and_exports(tmp_path):
     bundle = torch.load(config.save_path, weights_only=False)
     assert bundle["artifact_type"] == "controller"
     assert bundle["resource_report"]["fits"] is True
-    assert bundle["bram_export"]["layers"]  # BRAM-ready weights present
+    export = bundle["bram_export"]
+    layers = export["readout"]["layers"] if extra else export["layers"]
+    assert layers  # BRAM-ready weights present
+    # The command stage the FPGA must rebuild travels with the weights.
+    sidecar = json.loads(
+        Path(config.save_path).with_suffix(".export.json").read_text()
+    )
+    assert bundle["schema_version"] == CONTROLLER_SCHEMA
+    assert sidecar["output_mapping"] == bundle["output_mapping"]
+    assert sidecar["safe_range"] == bundle["safe_range"].tolist()
+
+    # A bundle from an unknown schema is refused, not guessed at.
+    bad = tmp_path / "future.pth"
+    torch.save({**bundle, "schema_version": 99}, bad)
+    with pytest.raises(ValueError, match="schema"):
+        Controller.from_checkpoint(str(bad))
 
     # The saved controller reloads and honours the policy contract.
     loaded = Controller.from_checkpoint(config.save_path)
